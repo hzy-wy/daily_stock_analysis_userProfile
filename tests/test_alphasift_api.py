@@ -1942,6 +1942,8 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
                 lookback_days=20,
                 source="akshare",
                 retries=1,
+                cache_dir="data/alphasift/daily_history",
+                cache_ttl_seconds=3600,
             )
             captured["daily_df"] = daily_df
             captured["context"] = kwargs.get("context")
@@ -1973,6 +1975,7 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
 
         daily_df = captured["daily_df"]
         self.assertEqual(daily_df.attrs["source"], "dsa:EfinanceFetcher")
+        self.assertEqual(daily_df.attrs["daily_source"], "dsa:EfinanceFetcher")
         self.assertEqual(daily_df.loc[0, "date"], "2026-06-03")
         self.assertEqual(daily_df.loc[0, "volume"], 123400)
         self.assertEqual(daily_df.loc[0, "open"], 10.5)

@@ -122,8 +122,14 @@ class TestTushareFetcherFollowUps(unittest.TestCase):
         ) as rate_limit_mock:
             top, bottom = fetcher.get_sector_rankings(n=1)
 
-        self.assertEqual(top, [{"name": "AI", "change_pct": 1.8}])
-        self.assertEqual(bottom, [{"name": "消费", "change_pct": -0.6}])
+        self.assertEqual(
+            top,
+            [{"name": "AI", "change_pct": 1.8, "source": "tushare_ths_industry"}],
+        )
+        self.assertEqual(
+            bottom,
+            [{"name": "消费", "change_pct": -0.6, "source": "tushare_ths_industry"}],
+        )
         self.assertEqual(rate_limit_mock.call_count, 2)
 
     def test_get_chip_distribution_rate_limits_all_tushare_calls(self) -> None:

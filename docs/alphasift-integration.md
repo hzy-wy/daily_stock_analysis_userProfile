@@ -37,7 +37,7 @@ AlphaSift 作为独立仓库维护的选股引擎接入 DSA。DSA 默认不启�
 - 兼容说明：`ALPHASIFT_INSTALL_SPEC` 只影响 `install` 调用时的来源校验；`requirements.txt` 与 `src/config.py` 的常量是实际运行时源码约束。`status` 返回 `install_spec_is_default` 可快速判断当前配置是否与 DSA 代码默认源一致。
 
 - DSA 增强：AlphaSift 通过 DSA provider context 在 LLM 重排前只补充 Top 候选的轻量实时行情和基本面上下文，不在初筛阶段抓新闻；DSA API 返回阶段会对最终 Top 候选补新闻和辅助摘要，并通过 `dsa_enrichment` 记录复用或补全情况。
-- 日 K 线补特征：DSA 调用 AlphaSift 时会优先复用 DSA 历史行情加载链路（数据库缓存、Tushare、Efinance、Akshare、Pytdx、Baostock、Yfinance 等 fallback），仅在 DSA 链路无可用数据时回退到 AlphaSift 原始日线数据源，减少单一上游超时拖垮选股。
+- 日 K 线补特征：DSA 调用 AlphaSift 时会优先复用 DSA 历史行情加载链路（数据库缓存、Tushare、Efinance、Akshare、Pytdx、Baostock、Yfinance 等 fallback），仅在 DSA 链路无可用数据时回退到 AlphaSift 原始日线数据源；桥接层会兼容并向原始函数透传 AlphaSift 的日线缓存参数，避免适配层升级后因 `cache_dir` / `cache_ttl_seconds` 等新增关键字导致全部候选补特征失败。
 - LLM 环境：DSA 调用 AlphaSift 时会桥接 DSA 已解析的 `LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`LLM_CHANNELS`、`LLM_<NAME>_*`、`LITELLM_CONFIG`、渠道额外请求头和各模型密钥；AlphaSift 独立运行时仍使用自己的 `.env`/环境变量。`LLM_TIMEOUT_SEC` 与 `LLM_MAX_TOKENS` 可被 AlphaSift 选股 LLM 重排读取，分别限制单次请求耗时和输出 token 上限。
 - 快照源：DSA 调用 AlphaSift 时，未显式配置 `SNAPSHOT_SOURCE_PRIORITY` 会按 token-aware 顺序注入：有 `TUSHARE_TOKEN` 时为 `tushare,sina,efinance,akshare_em,em_datacenter`，无 token 时为 `sina,efinance,akshare_em,em_datacenter`；同时注入 `DAILY_SOURCE=auto`、`DAILY_FETCH_RETRIES=3`、`DAILY_FETCH_MAX_WORKERS=1` 和默认候选上下文 `news,fund_flow,announcement,quote`。显式配置的源顺序、日线源和候选上下文 provider 会原样保留。
 - 外部数据源超时护栏：AlphaSift 对 efinance、AkShare、Baostock、Tushare、yfinance 等第三方 wrapper 源增加 caller-side timeout；`ALPHASIFT_SNAPSHOT_CALL_TIMEOUT_SEC` 默认 60 秒，`ALPHASIFT_DAILY_CALL_TIMEOUT_SEC` 默认 20 秒，`ALPHASIFT_SOURCE_CALL_TIMEOUT_SEC` 可作为全局兜底，设为 `0`/`off`/`disabled` 可关闭。超时后会记录 source health 与 `last_error`，并继续尝试后续数据源或 last-good / daily history fallback，减少一次 wrapper 卡死拖垮整次选股。

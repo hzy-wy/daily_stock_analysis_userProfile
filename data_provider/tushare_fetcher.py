@@ -1093,20 +1093,26 @@ class TushareFetcher(BaseFetcher):
         2. 东财接口 (ts.pro_api().moneyflow_ind_dc)
         注意：每个接口的行业分类和板块定义不同，会导致结果两者不一致
         """
-        def _get_rank_top_n(df: pd.DataFrame, change_col: str, industry_name: str, n: int) -> Tuple[list, list]:
+        def _get_rank_top_n(
+            df: pd.DataFrame,
+            change_col: str,
+            industry_name: str,
+            n: int,
+            source: str,
+        ) -> Tuple[list, list]:
             df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
             df = df.dropna(subset=[change_col])
 
             # 涨幅前n
             top = df.nlargest(n, change_col)
             top_sectors = [
-                {'name': row[industry_name], 'change_pct': row[change_col]}
+                {'name': row[industry_name], 'change_pct': row[change_col], 'source': source}
                 for _, row in top.iterrows()
             ]
 
             bottom = df.nsmallest(n, change_col)
             bottom_sectors = [
-                {'name': row[industry_name], 'change_pct': row[change_col]}
+                {'name': row[industry_name], 'change_pct': row[change_col], 'source': source}
                 for _, row in bottom.iterrows()
             ]
             return top_sectors, bottom_sectors
@@ -1124,7 +1130,7 @@ class TushareFetcher(BaseFetcher):
                 change_col = 'pct_change'
                 name = 'industry'
                 if change_col in df.columns:
-                    return _get_rank_top_n(df, change_col, name, n)
+                    return _get_rank_top_n(df, change_col, name, n, "tushare_ths_industry")
         except Exception as e:
             logger.warning(f"[Tushare] 获取同花顺行业板块涨跌榜失败: {e} 尝试东财接口")
 
@@ -1137,7 +1143,7 @@ class TushareFetcher(BaseFetcher):
                 change_col = 'pct_change'
                 name = 'name'
                 if change_col in df.columns:
-                    return _get_rank_top_n(df, change_col, name, n)
+                    return _get_rank_top_n(df, change_col, name, n, "tushare_eastmoney_industry")
         except Exception as e:
             logger.warning(f"[Tushare] 获取东财行业板块涨跌榜失败: {e}")
             return None

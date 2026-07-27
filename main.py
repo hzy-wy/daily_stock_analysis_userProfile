@@ -715,6 +715,25 @@ def _run_auto_backtest(config: Config) -> None:
         logger.warning(f"自动回测失败（已忽略）: {exc}")
 
 
+def _run_auto_decision_signal_outcomes() -> None:
+    """Refresh decision-signal outcomes after a normal analysis run."""
+
+    try:
+        from src.services.decision_signal_outcome_service import DecisionSignalOutcomeService
+
+        logger.info("开始自动更新 AI 建议信号后验...")
+        stats = DecisionSignalOutcomeService().run_outcomes(limit=500)
+        logger.info(
+            "AI 建议信号后验更新完成: evaluated=%s created=%s updated=%s skipped=%s",
+            stats.get("evaluated"),
+            stats.get("created"),
+            stats.get("updated"),
+            stats.get("skipped"),
+        )
+    except Exception as exc:
+        logger.warning("AI 建议信号后验更新失败（已忽略）: %s", exc)
+
+
 def run_full_analysis(
     config: Config,
     args: argparse.Namespace,
@@ -743,6 +762,7 @@ def run_full_analysis(
             "本轮跳过个股分析和大盘复盘。"
         )
         _run_auto_backtest(config)
+        _run_auto_decision_signal_outcomes()
         return True
 
     # Import pipeline modules outside the broad try/except so that import-time
@@ -1065,6 +1085,7 @@ def run_full_analysis(
 
         # === Auto backtest ===
         _run_auto_backtest(config)
+        _run_auto_decision_signal_outcomes()
 
         return True
 

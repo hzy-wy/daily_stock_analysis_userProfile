@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] Web 问股在默认 LiteLLM/Multi-Agent 后端也会把唯一匹配的中文股票名解析为标准股票上下文，避免仅输入公司名时 Agent 无法调用个股工具。
+- [修复] AlphaSift 日线桥接兼容并透传新版缓存关键字参数，避免候选日 K 补特征全部失败后被 MA20 等硬过滤条件清空。
+- [改进] 正常分析结束后自动 best-effort 更新 AI 建议信号后验，并让行业板块排行携带和展示实际数据口径，明确新浪行业分类与同花顺板块不可直接比较。
 - [修复] WebUI 分开展示发布版本、代码版本与构建时间，并通过构建输入摘要识别 `rsync -a` 保留时间戳造成的旧静态资源复用（fixes #2093）。
 - [chore] 暂停 PR Review 的自动触发，仅保留 `workflow_dispatch` 手动入口，避免辅助评审重复运行及评论权限失败产生误导性红灯；正式 CI 检查保持不变。
 - [新功能] Multi-Agent specialist 运行在分析历史保存成功后，按独立 skill 持久化版本化、低敏且幂等的有效 opinion 样本，为后续后验评估提供真实数据；本阶段不计算 outcome、不统计表现、不调整权重。

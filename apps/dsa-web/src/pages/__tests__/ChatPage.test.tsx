@@ -1004,6 +1004,10 @@ describe('ChatPage', () => {
         expect.objectContaining({
           message: '用缠论分析茅台',
           skills: ['chan_theory'],
+          context: {
+            stock_code: '600519',
+            stock_name: '贵州茅台',
+          },
         }),
         expect.objectContaining({
           skillNames: ['缠论'],
@@ -1011,7 +1015,6 @@ describe('ChatPage', () => {
         }),
       );
     });
-    expect(mockStartStream.mock.calls.at(-1)?.[0]?.context).toBeUndefined();
   });
 
   it('keeps a quick question in the input until the server accepts it', async () => {
@@ -1091,6 +1094,31 @@ describe('ChatPage', () => {
 
     fireEvent.change(await screen.findByPlaceholderText(/分析 600519/), {
       target: { value: '茅台现在适合买入吗？' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: {
+            stock_code: '600519',
+            stock_name: '贵州茅台',
+          },
+        }),
+        expect.any(Object),
+      );
+    });
+  });
+
+  it('resolves one unambiguous stock name for the LiteLLM backend', async () => {
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    fireEvent.change(await screen.findByPlaceholderText(/分析 600519/), {
+      target: { value: '请分析贵州茅台是否已经见底' },
     });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 

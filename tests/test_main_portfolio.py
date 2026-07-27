@@ -12,6 +12,30 @@ from src.services.runtime_scheduler import RuntimeSchedulerService
 
 
 class MainPortfolioTest(unittest.TestCase):
+    def test_auto_decision_signal_outcomes_refreshes_pending_samples(self):
+        service = MagicMock()
+        service.run_outcomes.return_value = {
+            "evaluated": 2,
+            "created": 1,
+            "updated": 1,
+            "skipped": 0,
+        }
+
+        with patch(
+            "src.services.decision_signal_outcome_service.DecisionSignalOutcomeService",
+            return_value=service,
+        ):
+            main._run_auto_decision_signal_outcomes()
+
+        service.run_outcomes.assert_called_once_with(limit=500)
+
+    def test_auto_decision_signal_outcomes_does_not_fail_analysis(self):
+        with patch(
+            "src.services.decision_signal_outcome_service.DecisionSignalOutcomeService",
+            side_effect=RuntimeError("outcome storage unavailable"),
+        ):
+            main._run_auto_decision_signal_outcomes()
+
     def test_parse_arguments_accepts_futu_portfolio(self):
         with patch.object(sys, "argv", ["main.py", "--portfolio", "FUTU"]):
             args = main.parse_arguments()

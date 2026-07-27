@@ -697,8 +697,7 @@ const ChatPage: React.FC = () => {
         nextActiveStockContext = stockResolution.context;
         useActiveContextForThisSend = stockResolution.useForCurrentSend;
       } else if (
-        agentStatus?.backend === 'codex_app_server'
-        && !codexStockContext
+        !codexStockContext
         && (!nextActiveStockContext || SWITCH_STOCK_MESSAGE_RE.test(msgText))
       ) {
         const nameContext = resolveUniqueStockNameContext(msgText, stockIndex);

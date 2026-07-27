@@ -1087,11 +1087,19 @@ class EfinanceFetcher(BaseFetcher):
             bottom = df.nsmallest(n, change_col)
 
             top_sectors = [
-                {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
+                {
+                    'name': str(row[name_col]),
+                    'change_pct': float(row[change_col]),
+                    'source': 'efinance_eastmoney_industry',
+                }
                 for _, row in top.iterrows()
             ]
             bottom_sectors = [
-                {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
+                {
+                    'name': str(row[name_col]),
+                    'change_pct': float(row[change_col]),
+                    'source': 'efinance_eastmoney_industry',
+                }
                 for _, row in bottom.iterrows()
             ]
             return top_sectors, bottom_sectors

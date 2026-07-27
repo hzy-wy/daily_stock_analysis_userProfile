@@ -224,6 +224,7 @@ P5 通过 sidecar 表保存用户反馈和后验结果，不扩展 `decision_sig
 - `decision_signal_feedback` 保存每个信号最新的 `useful|not_useful` 反馈、可选原因/备注和来源。
 - `decision_signal_outcomes` 按 `(signal_id, horizon, engine_version)` 幂等保存后验评估结果。
 - 当前 `engine_version=decision-signal-v1`。
+- 每次正常分析流程结束后会 best-effort 自动运行一次待处理信号的后验评估；缺少未来日线的 `unable` 样本会在后续分析运行中重试，后验失败不阻断主分析。`--serve-only` 本身不产生分析轮次，纯服务模式仍可显式调用 `POST /api/v1/decision-signals/outcomes/run`。
 - 后验评估只支持日线可验证的 `1d/3d/5d/10d`；`intraday/swing/long`、非方向动作、缺价和 forward bars 不足会写入 `eval_status=unable` 与明确 `unable_reason`。
 - 评估时冻结 action、market、market_phase、source_type、source_agent、plan_quality、data_quality_level、holding_state 等统计维度，历史统计不依赖后续 live join。
 

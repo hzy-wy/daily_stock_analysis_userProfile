@@ -1920,20 +1920,26 @@ class AkshareFetcher(BaseFetcher):
         """
         import akshare as ak
 
-        def _get_rank_top_n(df: pd.DataFrame, change_col: str, industry_name: str, n: int) -> Tuple[list, list]:
+        def _get_rank_top_n(
+            df: pd.DataFrame,
+            change_col: str,
+            industry_name: str,
+            n: int,
+            source: str,
+        ) -> Tuple[list, list]:
             df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
             df = df.dropna(subset=[change_col])
 
             # 涨幅前n
             top = df.nlargest(n, change_col)
             top_sectors = [
-                {'name': row[industry_name], 'change_pct': row[change_col]}
+                {'name': row[industry_name], 'change_pct': row[change_col], 'source': source}
                 for _, row in top.iterrows()
             ]
 
             bottom = df.nsmallest(n, change_col)
             bottom_sectors = [
-                {'name': row[industry_name], 'change_pct': row[change_col]}
+                {'name': row[industry_name], 'change_pct': row[change_col], 'source': source}
                 for _, row in bottom.iterrows()
             ]
             return top_sectors, bottom_sectors
@@ -1948,7 +1954,7 @@ class AkshareFetcher(BaseFetcher):
             if df is not None and not df.empty:
                 change_col = '涨跌幅'
                 name = '板块名称'
-                return _get_rank_top_n(df, change_col, name, n)
+                return _get_rank_top_n(df, change_col, name, n, "akshare_eastmoney_industry")
             
         except Exception as e:
             logger.warning(f"[Akshare] 东财接口获取行业板块排行失败: {e}，尝试新浪接口")
@@ -1964,7 +1970,7 @@ class AkshareFetcher(BaseFetcher):
                 return None
             change_col = '涨跌幅'
             name = '板块'
-            return _get_rank_top_n(df, change_col, name, n)
+            return _get_rank_top_n(df, change_col, name, n, "akshare_sina_industry")
         
         except Exception as e:
             logger.error(f"[Akshare] 新浪接口获取板块排行也失败: {e}")

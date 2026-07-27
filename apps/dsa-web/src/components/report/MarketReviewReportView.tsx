@@ -359,6 +359,47 @@ const formatRankingChange = (value: unknown): string => {
   return `${sign}${numeric.toFixed(2)}%`;
 };
 
+const RANKING_SOURCE_LABELS: Record<string, Record<ReportLanguage, string>> = {
+  akshare_eastmoney_industry: {
+    zh: '数据口径：东方财富行业板块',
+    en: 'Source: Eastmoney industry boards',
+    ko: '데이터 기준: Eastmoney 업종 섹터',
+  },
+  akshare_sina_industry: {
+    zh: '数据口径：新浪行业分类（与同花顺板块不可直接比较）',
+    en: 'Source: Sina industry classification (not directly comparable with Tonghuashun boards)',
+    ko: '데이터 기준: Sina 업종 분류(동화순 섹터와 직접 비교 불가)',
+  },
+  efinance_eastmoney_industry: {
+    zh: '数据口径：东方财富行业板块',
+    en: 'Source: Eastmoney industry boards',
+    ko: '데이터 기준: Eastmoney 업종 섹터',
+  },
+  tickflow_sw1: {
+    zh: '数据口径：申万一级行业',
+    en: 'Source: Shenwan level-1 industries',
+    ko: '데이터 기준: 선완 1급 업종',
+  },
+  tushare_eastmoney_industry: {
+    zh: '数据口径：Tushare·东方财富行业',
+    en: 'Source: Tushare · Eastmoney industries',
+    ko: '데이터 기준: Tushare · Eastmoney 업종',
+  },
+  tushare_ths_industry: {
+    zh: '数据口径：Tushare·同花顺行业',
+    en: 'Source: Tushare · Tonghuashun industries',
+    ko: '데이터 기준: Tushare · Tonghuashun 업종',
+  },
+};
+
+const formatRankingSource = (source: string | undefined, language: ReportLanguage): string | null => {
+  const normalized = String(source || '').trim();
+  if (!normalized) {
+    return null;
+  }
+  return RANKING_SOURCE_LABELS[normalized]?.[language] || normalized;
+};
+
 export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
   report,
   recordId,
@@ -656,6 +697,10 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                     if (rows.length === 0) {
                       return null;
                     }
+                    const sourceLabel = formatRankingSource(
+                      rows.find((item) => item.source)?.source,
+                      reportLanguage,
+                    );
                     return (
                       <div key={`${key}-${side}`} className="rounded-lg border border-subtle p-3">
                         <div className="mb-2 flex items-center justify-between gap-2">
@@ -664,6 +709,9 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                             {side === 'top' ? marketReviewText.leading : marketReviewText.lagging}
                           </span>
                         </div>
+                        {sourceLabel ? (
+                          <p className="mb-2 text-xs text-muted-text">{sourceLabel}</p>
+                        ) : null}
                         <div className="space-y-1.5">
                           {rows.slice(0, 5).map((item, index) => (
                             <div key={`${item.name}-${index}`} className="flex items-center justify-between gap-3 text-sm">

@@ -52,8 +52,8 @@ const combinedMarketReviewPayload: MarketReviewPayload = {
         low: 3860.1,
       }],
       sectors: {
-        top: [{ name: '半导体', changePct: 2.35 }],
-        bottom: [{ name: '煤炭', changePct: -1.1 }],
+        top: [{ name: '半导体', changePct: 2.35, source: 'akshare_sina_industry' }],
+        bottom: [{ name: '煤炭', changePct: -1.1, source: 'akshare_sina_industry' }],
       },
       concepts: {
         top: [{ name: '机器人概念', changePct: 4.2 }],
@@ -159,6 +159,9 @@ describe('MarketReviewReportView', () => {
     expect(screen.getByText('机器人概念')).toBeInTheDocument();
     expect(screen.getByText('+4.20%')).toBeInTheDocument();
     expect(screen.getByText('-2.05%')).toBeInTheDocument();
+    expect(
+      screen.getAllByText('数据口径：新浪行业分类（与同花顺板块不可直接比较）'),
+    ).toHaveLength(2);
   });
 
   it('localizes structured market data labels for Chinese reports', () => {
