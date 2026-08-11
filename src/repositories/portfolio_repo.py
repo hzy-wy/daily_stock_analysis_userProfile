@@ -613,6 +613,30 @@ class PortfolioRepository:
             ).scalars().all()
             return list(rows), total
 
+    def list_trade_history(self, account_id: Optional[int] = None) -> List[PortfolioTrade]:
+        """Return the complete active-account trade ledger in replay order.
+
+        Trader-profile calculations must use the full observation window rather
+        than the currently visible event page.  Keeping this query in the
+        repository also prevents the service from bypassing the active-account
+        boundary used by the rest of the portfolio API.
+        """
+
+        with self.db.get_session() as session:
+            query = select(PortfolioTrade).join(
+                PortfolioAccount,
+                PortfolioAccount.id == PortfolioTrade.account_id,
+            ).where(PortfolioAccount.is_active.is_(True))
+            if account_id is not None:
+                query = query.where(PortfolioTrade.account_id == account_id)
+            rows = session.execute(
+                query.order_by(
+                    PortfolioTrade.trade_date.asc(),
+                    PortfolioTrade.id.asc(),
+                )
+            ).scalars().all()
+            return list(rows)
+
     def query_cash_ledger(
         self,
         *,

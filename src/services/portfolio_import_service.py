@@ -188,6 +188,23 @@ class PortfolioImportService:
         dry_run: bool = False,
     ) -> Dict[str, Any]:
         broker_norm = self._normalize_broker(broker)
+        return self.commit_normalized_trade_records(
+            account_id=account_id,
+            source=f"csv_import:{broker_norm}",
+            records=records,
+            dry_run=dry_run,
+        )
+
+    def commit_normalized_trade_records(
+        self,
+        *,
+        account_id: int,
+        source: str,
+        records: List[Dict[str, Any]],
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """Commit already-normalized trades from a trusted importer boundary."""
+        source_norm = (source or "").strip() or "normalized_import"
 
         inserted_count = 0
         duplicate_count = 0
@@ -244,7 +261,7 @@ class PortfolioImportService:
                     currency=record.get("currency"),
                     trade_uid=trade_uid,
                     dedup_hash=dedup_hash_to_use,
-                    note=(record.get("note") or "").strip() or f"csv_import:{broker_norm}",
+                    note=(record.get("note") or "").strip() or source_norm,
                 )
                 inserted_count += 1
             except PortfolioConflictError:

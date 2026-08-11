@@ -7,13 +7,14 @@ import { analysisApi, DuplicateTaskError } from '../api/analysis';
 import { historyApi } from '../api/history';
 import { agentApi, type SkillInfo } from '../api/agent';
 import { systemConfigApi } from '../api/systemConfig';
-import { ApiErrorAlert, Button, Drawer, EmptyState, InlineAlert } from '../components/common';
+import { ApiErrorAlert, Button, Drawer, InlineAlert } from '../components/common';
 import { DashboardStateBlock } from '../components/dashboard';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { StockHistoryTrendDrawer } from '../components/history';
 import { ReportMarkdownDrawer } from '../components/report/ReportMarkdownDrawer';
 import { MarketReviewReportView } from '../components/report/MarketReviewReportView';
 import { MarketReviewRegionSelector } from '../components/market-review/MarketReviewRegionSelector';
+import { MarketDashboard } from '../components/market-dashboard';
 import { ReportSummary } from '../components/report/ReportSummary';
 import { RunFlowPanel } from '../components/run-flow';
 import { TaskPanel } from '../components/tasks';
@@ -193,7 +194,7 @@ const HomePage: React.FC = () => {
   const [strategyMenuOpen, setStrategyMenuOpen] = useState(false);
   const [runFlowDrawer, setRunFlowDrawer] = useState<RunFlowDrawerState>({ open: false });
   const [duplicateBannerVisible, setDuplicateBannerVisible] = useState(false);
-  const [sidebarWorkspaceTab, setSidebarWorkspaceTab] = useState<HomeWorkspaceTab>('history');
+  const [sidebarWorkspaceTab, setSidebarWorkspaceTab] = useState<HomeWorkspaceTab>('dashboard');
   const [isBatchAnalyzingWatchlist, setIsBatchAnalyzingWatchlist] = useState(false);
   const [batchAnalyzeStatus, setBatchAnalyzeStatus] = useState<BatchAnalyzeStatus>(null);
   const [watchlistHistoryItemsByCode, setWatchlistHistoryItemsByCode] = useState<Map<string, StockBarItem>>(new Map());
@@ -672,6 +673,7 @@ const HomePage: React.FC = () => {
 
   const handleHistoryItemClick = useCallback((recordId: number) => {
     clearMarketReviewState();
+    setSidebarWorkspaceTab('history');
     void selectHistoryItem(recordId);
     setSidebarOpen(false);
   }, [clearMarketReviewState, selectHistoryItem]);
@@ -700,6 +702,7 @@ const HomePage: React.FC = () => {
       stockName?: string,
       selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image',
     ) => {
+      setSidebarWorkspaceTab('history');
       void submitAnalysis({
         stockCode,
         stockName,
@@ -710,6 +713,14 @@ const HomePage: React.FC = () => {
     },
     [query, selectedAnalysisSkills, submitAnalysis],
   );
+
+  const handleWorkspaceTabChange = useCallback((tab: HomeWorkspaceTab) => {
+    if (tab === 'dashboard') {
+      clearMarketReviewState();
+      setSidebarOpen(false);
+    }
+    setSidebarWorkspaceTab(tab);
+  }, [clearMarketReviewState]);
 
   useEffect(() => {
     const state = location.state as StockAnalysisNavigationState | null;
@@ -894,7 +905,7 @@ const HomePage: React.FC = () => {
     [refreshMarketReviewHistory, scrollMarketReviewFeedbackIntoView, stopMarketReviewPolling, t],
   );
 
-  const handleTriggerMarketReview = useCallback(async () => {
+  const handleTriggerMarketReview = useCallback(async (regionOverride?: MarketReviewRegion[]) => {
     setIsSubmittingMarketReview(true);
     setMarketReviewNotice(null);
     setMarketReviewError(null);
@@ -904,7 +915,7 @@ const HomePage: React.FC = () => {
     try {
       const result = await analysisApi.triggerMarketReview({
         sendNotification: notify,
-        regions: marketReviewRegionOverride,
+        regions: regionOverride ?? marketReviewRegionOverride,
       });
       setMarketReviewNotice({
         variant: 'success',
@@ -1221,7 +1232,7 @@ const HomePage: React.FC = () => {
         <TaskPanel tasks={activeTasks} onOpenRunFlow={openTaskRunFlow} />
         <HomeStockWorkspace
           activeTab={sidebarWorkspaceTab}
-          onTabChange={setSidebarWorkspaceTab}
+          onTabChange={handleWorkspaceTabChange}
           watchlistRows={watchlistRows}
           watchlistLoading={watchlistState.isLoading}
           watchlistActioning={watchlistState.isActioning}
@@ -1253,6 +1264,7 @@ const HomePage: React.FC = () => {
       handleAnalyzeWatchlist,
       handleDeleteStock,
       handleHistoryItemClick,
+      handleWorkspaceTabChange,
       isBatchAnalyzingWatchlist,
       isDeletingStock,
       isLoadingStockBar,
@@ -1280,7 +1292,7 @@ const HomePage: React.FC = () => {
       data-testid="home-dashboard"
       className="flex h-[calc(100vh-5rem)] w-full flex-col overflow-hidden md:flex-row sm:h-[calc(100vh-5.5rem)] lg:h-[calc(100vh-2rem)]"
     >
-      <div className="flex-1 flex flex-col min-h-0 min-w-0 max-w-full lg:max-w-6xl mx-auto w-full">
+      <div className="flex min-h-0 min-w-0 w-full max-w-full flex-1 flex-col">
         <header className="relative z-30 flex min-w-0 flex-shrink-0 items-center overflow-visible px-3 py-3 md:px-4 md:py-4">
           <div className="flex min-w-0 flex-1 flex-col gap-2.5 md:flex-row md:items-center">
             <div className="flex min-w-0 flex-1 items-center gap-2.5">
@@ -1523,7 +1535,17 @@ const HomePage: React.FC = () => {
                 onDismiss={clearError}
               />
             ) : null}
-            {!marketReviewReport && isLoadingReport ? (
+            {!marketReviewReport && sidebarWorkspaceTab === 'dashboard' ? (
+              <MarketDashboard
+                className="pb-2"
+                reviewLoading={isSubmittingMarketReview}
+                onRunReview={(region) => {
+                  const nextRegions = [region as MarketReviewRegion];
+                  setMarketReviewRegionOverride(nextRegions);
+                  void handleTriggerMarketReview(nextRegions);
+                }}
+              />
+            ) : !marketReviewReport && isLoadingReport ? (
               <div className="flex h-full flex-col items-center justify-center">
                 <DashboardStateBlock title={t('home.loadingReport')} loading />
               </div>
@@ -1628,18 +1650,15 @@ const HomePage: React.FC = () => {
                 )}
               </div>
             ) : !marketReviewReport ? (
-              <div className="flex h-full items-center justify-center">
-                <EmptyState
-                  title={t('home.startAnalysisTitle')}
-                  description={t('home.startAnalysisDescription')}
-                  className="max-w-xl border-dashed"
-                  icon={(
-                    <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                    </svg>
-                  )}
-                />
-              </div>
+              <MarketDashboard
+                className="pb-2"
+                reviewLoading={isSubmittingMarketReview}
+                onRunReview={(region) => {
+                  const nextRegions = [region as MarketReviewRegion];
+                  setMarketReviewRegionOverride(nextRegions);
+                  void handleTriggerMarketReview(nextRegions);
+                }}
+              />
             ) : null}
           </section>
         </div>

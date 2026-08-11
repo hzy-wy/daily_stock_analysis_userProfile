@@ -64,6 +64,52 @@ vi.mock('../../api/agent', () => ({
   },
 }));
 
+vi.mock('../../api/stocks', () => ({
+  stocksApi: {
+    getMarketDashboard: vi.fn().mockResolvedValue({
+      region: 'cn',
+      tradeDate: '2026-03-18',
+      generatedAt: '2026-03-18T15:05:00+08:00',
+      indices: [{
+        code: '000001',
+        name: '上证指数',
+        current: 3600,
+        change: 18,
+        changePct: 0.5,
+        high: 3610,
+        low: 3575,
+      }],
+      breadth: {
+        available: true,
+        upCount: 3200,
+        downCount: 1900,
+        flatCount: 100,
+        limitUpCount: 70,
+        limitDownCount: 5,
+        totalAmount: 12345,
+      },
+      rankings: {
+        available: true,
+        topSectors: [{ name: '电子', changePct: 3.2 }],
+        bottomSectors: [],
+        topConcepts: [],
+        bottomConcepts: [],
+      },
+      marketLight: {
+        status: 'green',
+        score: 72,
+        label: '偏强',
+        temperatureLabel: '偏热',
+        reasons: ['市场宽度改善'],
+        guidance: '关注结构延续性',
+        dataQuality: 'ok',
+      },
+      coverage: { indices: true, breadth: true, sectorRankings: true },
+      sourceLabel: 'configured_market_data_provider_chain',
+    }),
+  },
+}));
+
 vi.mock('../../hooks/useTaskStream', () => ({
   useTaskStream: vi.fn(),
 }));
@@ -204,6 +250,10 @@ const runFlowSnapshot: RunFlowSnapshot = {
   ],
 };
 
+async function openHistoryWorkspace(): Promise<void> {
+  fireEvent.click(await screen.findByRole('button', { name: '历史' }));
+}
+
 describe('HomePage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -237,7 +287,7 @@ describe('HomePage', () => {
     });
   });
 
-  it('renders the dashboard workspace and auto-loads the first report', async () => {
+  it('opens the market dashboard by default while keeping the first report available in history', async () => {
     vi.mocked(historyApi.getList).mockResolvedValue({
       total: 1,
       page: 1,
@@ -264,6 +314,12 @@ describe('HomePage', () => {
     expect(dashboard.querySelector('.flex-1.flex.min-h-0.overflow-hidden')).toBeTruthy();
     expect(screen.getByTestId('home-dashboard-scroll')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('输入股票代码或名称，如 600519、贵州茅台、AAPL')).toBeInTheDocument();
+    expect(await screen.findByTestId('market-dashboard')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '看板' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByText('趋势维持强势')).not.toBeInTheDocument();
+
+    await openHistoryWorkspace();
+
     expect(await screen.findByText('趋势维持强势')).toBeInTheDocument();
     expect(
       screen.getByRole('button', {
@@ -289,6 +345,8 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
+    await openHistoryWorkspace();
+
     const fullReportButton = await screen.findByRole('button', {
       name: getReportText(normalizeReportLanguage(historyReport.meta.reportLanguage)).fullReport,
     });
@@ -302,7 +360,7 @@ describe('HomePage', () => {
     expect(await screen.findByRole('heading', { name: 'Full Markdown Report' })).toBeInTheDocument();
   });
 
-  it('shows the empty report workspace when history is empty', async () => {
+  it('shows the market dashboard when report history is empty', async () => {
     vi.mocked(historyApi.getList).mockResolvedValue({
       total: 0,
       page: 1,
@@ -316,10 +374,10 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText('开始分析')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '开始分析', level: 3 })).toBeInTheDocument();
-    expect(screen.getByText('输入股票代码进行分析，或从左侧选择历史报告查看。')).toBeInTheDocument();
-    expect(screen.getByText('暂无个股记录')).toBeInTheDocument();
+    expect(await screen.findByTestId('market-dashboard')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '全球市场驾驶舱', level: 1 })).toBeInTheDocument();
+    expect(screen.getByText('上证指数')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '看板' })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('opens the run-flow drawer from an active task in TaskPanel', async () => {
@@ -378,6 +436,8 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
+    await openHistoryWorkspace();
+
     fireEvent.click(await screen.findByText('运行状态'));
     fireEvent.click(screen.getByRole('button', { name: '查看历史记录 1 运行流' }));
 
@@ -425,6 +485,8 @@ describe('HomePage', () => {
         <HomePage />
       </MemoryRouter>,
     );
+
+    await openHistoryWorkspace();
 
     expect(await screen.findByRole('button', { name: /MARKET/ })).toBeInTheDocument();
     const newerStockButton = await screen.findByRole('button', { name: /AAPL/ });
@@ -1266,6 +1328,8 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
+    await openHistoryWorkspace();
+
     expect(await screen.findByRole('button', { name: /MARKET/ })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '删除 大盘复盘 历史记录' }));
@@ -1638,7 +1702,7 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
-    await screen.findByText('趋势维持强势');
+    await screen.findByTestId('market-dashboard');
     const dashboardScroll = screen.getByTestId('home-dashboard-scroll');
     const scrollToMock = vi.fn(function scrollTo(this: HTMLElement, options?: ScrollToOptions) {
       if (typeof options?.top === 'number') {
@@ -1812,6 +1876,8 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
+    await openHistoryWorkspace();
+
     const followUpButton = await screen.findByRole('button', { name: '追问 AI' });
     fireEvent.click(followUpButton);
 
@@ -1897,6 +1963,8 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
+    await openHistoryWorkspace();
+
     const historyTrendButton = await screen.findByRole('button', { name: '历史趋势' });
     fireEvent.click(historyTrendButton);
 
@@ -1978,6 +2046,8 @@ describe('HomePage', () => {
         <HomePage />
       </MemoryRouter>,
     );
+
+    await openHistoryWorkspace();
 
     // Wait for the report to load
     await screen.findByText('趋势维持强势');
@@ -2110,6 +2180,8 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
+    await openHistoryWorkspace();
+
     await screen.findByText('大盘复盘摘要');
     expect(screen.queryByRole('heading', { name: '大盘复盘详情' })).not.toBeInTheDocument();
     expect(await screen.findByRole('heading', { name: '市场情绪与赚钱效应' })).toBeInTheDocument();
@@ -2195,6 +2267,8 @@ describe('HomePage', () => {
         <HomePage />
       </MemoryRouter>,
     );
+
+    await openHistoryWorkspace();
 
     await screen.findByText('趋势维持强势');
 

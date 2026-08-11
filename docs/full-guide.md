@@ -478,6 +478,9 @@ daily_stock_analysis/
 | `DAILY_MARKET_CONTEXT_ENABLED` | 将当日大盘环境摘要注入个股分析 Prompt，并在高风险/退潮环境下软化激进买入建议；默认开启，设为 `false` 后仍可运行大盘复盘 | `true` |
 | `MARKET_REVIEW_REGION` | 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、both(五市场)，us/jp/kr 适合仅关注单区域用户 | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | 大盘复盘指数涨跌颜色：`green_up`=绿涨红跌（默认），`red_up`=红涨绿跌 | `green_up` |
+| `MARKET_DASHBOARD_FETCH_BUDGET_SECONDS` | 首页市场看板并发抓取的单次总等待预算；到期返回已完成分块，慢分块继续后台刷新 | `8` |
+| `MARKET_DASHBOARD_CACHE_TTL_SECONDS` | 首页市场看板最近成功分块的新鲜期；设为 `0` 表示每次触发刷新 | `60` |
+| `MARKET_DASHBOARD_STALE_TTL_SECONDS` | 数据源失败时允许显式标旧并回退最近成功分块的最长时限（默认 7 天，覆盖周末/长假） | `604800` |
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：默认 `true`，非交易日跳过执行；设为 `false` 或使用 `--force-run` 可强制执行（Issue #373） | `true` |
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
 | `SCHEDULE_TIME` | 定时执行时间 | `18:00` |
@@ -1557,7 +1560,8 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 ### 功能特性
 
 - 📝 **配置管理** - 查看/修改自选股列表
-- 🗂️ **首页三视图** - 首页新增「历史 / 自选 / 今日」工作区，默认进入历史视图；自选页支持批量提交全部或仅提交“今日未分析”股票
+- 🗂️ **首页四视图** - 首页提供「看板 / 历史 / 自选 / 今日」工作区并默认进入看板；自选页支持批量提交全部或仅提交“今日未分析”股票
+- 🌍 **全球市场看板** - 首页默认进入独立“看板”工作区，展示 A 股主要指数、市场宽度、板块热力与市场信号灯；左侧可切换“看板 / 历史 / 自选 / 今日”，市场可切换中国香港、美国、日本和韩国；国际市场仅展示数据源真实覆盖的字段，不以零值补齐缺口
 - 🧭 **界面语言切换** - 登录态与退出态均支持界面语言快速切换（`zh` / `en`），独立于 `REPORT_LANGUAGE`，用于静态 UI 文案与导航骨架
 - 🚀 **快速分析** - 通过 API 接口触发个股分析；首页也提供“大盘复盘”按钮和单次市场选择器，可在 Docker/server 模式下按服务器默认或临时选择的单个/多个市场后台触发复盘
 - 🎯 **策略选择** - 首页支持显式选择分析策略 skill；不传 `skills` 时按系统默认策略运行，便于保持与历史行为兼容
@@ -1572,7 +1576,10 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 - 🧩 **输入数据块可见** - 普通分析报告会在历史详情、同步响应和 completed 任务状态中返回低敏 `AnalysisContextPack` overview，Web 报告页在策略点位和资讯之后默认折叠展示数据块状态、来源、缺失原因和降级摘要
 - 💬 **问股追问上下文** - 从历史报告进入问股后，后续追问会持续携带当前 `stock_code/stock_name`；切回或重载已有问股会话时，会从已加载的历史用户消息恢复基础当前标的；只有用户明确切换标的时才切换上下文，含比较/对比/vs/差异/相比等明确比较意图或多个非当前明确股票代码的问题不会污染当前标的
 - 📈 **回测验证** - 评估历史分析准确率，查询方向胜率与模拟收益
+- 🧬 **交易风格画像** - 持仓页按当前账户范围和完整交易流水展示六维行为雷达图、样本量与置信度；画像随交易操作更新，只描述交易倾向，不作为能力评分或投资建议
 - 🔗 **API 文档** - 访问 `/docs` 查看 Swagger UI
+
+首页市场看板与交易风格画像的详细口径、刷新行为和接口说明见 [首页市场看板与交易风格画像](market-dashboard-and-trader-profile.md)。
 
 ### 与本变更相关的产品行为
 
@@ -1813,6 +1820,7 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 - 在 `fifo` / `avg` 两种成本法之间切换，查看快照 KPI、风险摘要和 Top Positions 集中度图表。
 - 直接在 Web 页面新增账户、删除误建账户，或录入交易、现金流水、公司行动等事件。
 - 通过 CSV 导入持仓记录，支持先 `dry_run` 预览，再决定是否正式写入。
+- 上传券商交易截图，通过 Vision 模型识别逐笔交易，在可编辑预览中核对后写入当前单一账户。
 - 在事件列表中按账户、日期、方向、代码等条件筛选，并对单账户事件做删除修正。
 
 ### 相关接口
@@ -1825,6 +1833,8 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 | `/api/v1/portfolio/cash-ledger` | GET | 分页查询现金流水 |
 | `/api/v1/portfolio/corporate-actions` | GET | 分页查询公司行动 |
 | `/api/v1/portfolio/imports/csv/brokers` | GET | 查询内建 CSV 券商解析器 |
+| `/api/v1/portfolio/imports/image/parse` | POST | 识别券商截图并返回可编辑的标准化交易预览，不写入账本 |
+| `/api/v1/portfolio/imports/image/commit` | POST | 把用户核对后的截图交易写入指定账户 |
 | `/api/v1/portfolio/fx/refresh` | POST | 手动刷新汇率缓存 |
 | `/api/v1/portfolio/accounts/{account_id}` | DELETE | 删除/归档持仓账户 |
 | `/api/v1/portfolio/trades/{trade_id}` | DELETE | 删除交易记录 |
@@ -1837,10 +1847,16 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 
 - CSV 导入内建 `huatai`、`citic`、`cmb` 解析器；若券商列表接口失败，Web 端会自动回退到这些内建选项。
 - 导入流程会先把 CSV 解析成标准化记录，再逐条提交到持仓账本；遇到忙碌行会计入 `failed_count`，不会因为单行冲突让整批请求整体失败。
+- 账户视图是持仓页所有快照、风险摘要、行业集中度、事件列表和写入目标的统一作用域；切换账户时页面会立即清空旧数据，并忽略旧请求迟到的响应。单账户模式隐藏持仓明细中的账户列，“全部账户”模式保留账户列。
+- 券商截图导入只接受 JPEG、PNG、WebP 或 GIF，单图上限 5 MB；需要配置支持图片输入的 `VISION_MODEL`（或 `OPENAI_VISION_MODEL` / 可回退的主模型）及对应 API Key。识别只生成预览，不会自动写入；必须选择单一账户并点击确认导入。截图只有证券名称时，仅用本地股票索引做精确且唯一的代码反查，不让模型猜代码。使用前请遮盖不需要上传给模型服务商的账号、姓名等敏感信息，详细边界见 [持仓截图导入](portfolio-image-import.md)。
 - 删除账户使用软删除语义：默认账户列表、快照、风险、录入入口和事件列表不再显示该账户，但交易、现金流水和公司行动不会被物理清理；如需纠正单条流水，需在账户归档前使用事件列表里的删除修正入口。
 - 交易去重优先使用账户内唯一的 `trade_uid`，缺失时回退到基于日期、代码、方向、数量、价格、费用、税费、币种的确定性哈希。
 - 卖出会先校验可用数量，超卖返回 `409 portfolio_oversell`；并发写入冲突时可能返回 `409 portfolio_busy`。
-- 持仓快照的 `positions[]` 会返回 `price_source`、`price_date`、`price_stale`、`price_available` 等价格元信息；当天快照默认会先尝试实时行情，实时价不可用或非正值时再回退到 `as_of` 当天或之前最近的历史收盘价；传入 `include_realtime=false` 时会跳过实时行情并直接使用本地历史收盘价回退路径，Web 持仓页用该模式优先渲染持仓列表，避免外部实时行情源变慢时阻塞首屏。历史 `as_of` 快照不会拉取实时价，也不会再把成本价静默当作现价；缺价持仓会标记 `price_available=false` 并从市值与未实现盈亏汇总中排除。
+- 持仓快照的 `positions[]` 会返回 `price_source`、`price_date`、`price_stale`、`price_available` 等价格元信息；当天快照默认会先尝试实时行情，实时价不可用或非正值时再回退到 `as_of` 当天或之前最近的历史收盘价；传入 `include_realtime=false` 时会跳过实时行情并直接使用本地历史收盘价回退路径。Web 持仓页加载和手动刷新时使用实时估值，并在页面可见期间每 30 秒、以及窗口重新获得焦点时静默更新快照，现价、市值、持仓盈亏、当日盈亏与总权益会由同一份快照联动变化；后台刷新失败时保留最后一次成功数据并展示提示。历史 `as_of` 快照不会拉取实时价，也不会再把成本价静默当作现价；缺价持仓会标记 `price_available=false` 并从市值与未实现盈亏汇总中排除。
+- 同一股票同一交易日的交易按“买入 → 卖出”确定性回放；持仓周期仅在日终数量为零时结束，避免交易记录只有日期、没有成交时刻时，数据库录入顺序造成日内做 T 临时清仓并重开。
+- `positions[]` 保留 `avg_cost`、`total_cost`、`unrealized_pnl_*` 作为 FIFO/AVG 严格会计字段，同时返回 `holding_avg_cost`、`holding_total_cost`、`holding_pnl_*` 和 `holding_cycle_start_date` 作为连续持仓周期的券商式摊薄口径；Web 持仓明细默认展示后者，已实现做 T 收益不会从当前持仓盈亏中丢失。
+- `positions[]` 还会返回 `available_quantity`、`holding_days`、`daily_pnl_*`、`position_weight_pct` 和 `break_even_pct`。A 股“可用”按 T+1 保守计算为日终持仓减去当日买入；当日盈亏使用“日终市值 - 昨收对应的期初市值 + 当日净卖出 - 当日买入 + 当日现金分红”，因此日内先卖后买的做 T 不会被误判为仅有新仓浮亏。当日收益率使用现金流调整分母“期初市值 + max(当日买入现金 - 当日卖出回款, 0)”；盘中净加仓会把新增资金纳入分母，卖出后等量或低成本回补则仍以期初市值为主要分母。若缺少当日价、昨收价或发生拆股，当日盈亏返回空值而不是猜测。
+- 快照顶层与账户层都返回 `holding_pnl`、`daily_pnl`；全部账户模式会把各账户的基准币种金额折算为 CNY 后再汇总。只要任一持仓缺少可靠的当日盈亏输入，顶层 `daily_pnl` 返回空值，避免展示不完整合计。
 - 汇率刷新会先尝试在线源；若在线获取失败，则回退到最近一次缓存并标记 `is_stale=true`，避免快照和风险页整体不可用。
 - 当 `PORTFOLIO_FX_UPDATE_ENABLED=false` 时，手动刷新接口会明确返回“在线刷新已禁用”，页面不会误导为“当前没有可刷新的汇率对”。
 - 风险摘要包含集中度、回撤、止损接近度等信息；`sector_concentration` 会优先尝试按板块归类，失败时降级到 `UNCLASSIFIED`，不会阻断风险结果返回。

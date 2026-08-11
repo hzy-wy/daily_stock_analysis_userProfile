@@ -12,6 +12,7 @@ const {
   getAccounts,
   getSnapshot,
   getRisk,
+  getTraderProfile,
   refreshFx,
   listImportBrokers,
   listTrades,
@@ -25,6 +26,8 @@ const {
   deleteCorporateAction,
   parseCsvImport,
   commitCsvImport,
+  parseImageImport,
+  commitImageImport,
   createAccount,
   deleteAccount,
   analyzePosition,
@@ -34,6 +37,7 @@ const {
   getAccounts: vi.fn(),
   getSnapshot: vi.fn(),
   getRisk: vi.fn(),
+  getTraderProfile: vi.fn(),
   refreshFx: vi.fn(),
   listImportBrokers: vi.fn(),
   listTrades: vi.fn(),
@@ -47,6 +51,8 @@ const {
   deleteCorporateAction: vi.fn(),
   parseCsvImport: vi.fn(),
   commitCsvImport: vi.fn(),
+  parseImageImport: vi.fn(),
+  commitImageImport: vi.fn(),
   createAccount: vi.fn(),
   deleteAccount: vi.fn(),
   analyzePosition: vi.fn(),
@@ -66,6 +72,7 @@ vi.mock('../../api/portfolio', () => ({
     getAccounts,
     getSnapshot,
     getRisk,
+    getTraderProfile,
     refreshFx,
     listImportBrokers,
     listTrades,
@@ -79,6 +86,8 @@ vi.mock('../../api/portfolio', () => ({
     deleteCorporateAction,
     parseCsvImport,
     commitCsvImport,
+    parseImageImport,
+    commitImageImport,
     createAccount,
     deleteAccount,
     analyzePosition,
@@ -92,6 +101,10 @@ vi.mock('recharts', () => ({
   Tooltip: () => null,
   Legend: () => null,
   Cell: () => null,
+  RadarChart: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  Radar: () => null,
+  PolarGrid: () => null,
+  PolarAngleAxis: () => null,
 }));
 
 type AccountItem = {
@@ -124,16 +137,26 @@ function makeSnapshot(options: {
   dataQuality?: string;
   limitations?: string[];
   positions?: Array<Record<string, unknown>>;
+  totalCash?: number;
+  totalMarketValue?: number;
+  totalEquity?: number;
+  holdingPnl?: number;
+  dailyPnl?: number | null;
 } = {}) {
   const accountId = options.accountId ?? 1;
+  const totalCash = options.totalCash ?? 1000;
+  const totalMarketValue = options.totalMarketValue ?? 2000;
+  const totalEquity = options.totalEquity ?? 3000;
   return {
     asOf: '2026-03-19',
     costMethod: 'fifo' as const,
     currency: 'CNY',
     accountCount: options.accountCount ?? 1,
-    totalCash: 1000,
-    totalMarketValue: 2000,
-    totalEquity: 3000,
+    totalCash,
+    totalMarketValue,
+    totalEquity,
+    holdingPnl: options.holdingPnl,
+    dailyPnl: options.dailyPnl,
     realizedPnl: 0,
     unrealizedPnl: 0,
     feeTotal: 0,
@@ -151,9 +174,9 @@ function makeSnapshot(options: {
         baseCurrency: 'CNY',
         asOf: '2026-03-19',
         costMethod: 'fifo' as const,
-        totalCash: 1000,
-        totalMarketValue: 2000,
-        totalEquity: 3000,
+        totalCash,
+        totalMarketValue,
+        totalEquity,
         realizedPnl: 0,
         unrealizedPnl: 0,
         feeTotal: 0,
@@ -292,6 +315,34 @@ describe('PortfolioPage FX refresh', () => {
     getAccounts.mockResolvedValue(makeAccounts());
     getSnapshot.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => makeSnapshot({ accountId, fxStale: true }));
     getRisk.mockResolvedValue(makeRisk());
+    getTraderProfile.mockResolvedValue({
+      scope: 'account',
+      accountId: 1,
+      asOf: '2026-03-19',
+      status: 'forming',
+      confidence: 'low',
+      confidenceScore: 30,
+      archetype: 'forming',
+      sample: {
+        tradeCount: 2,
+        buyCount: 1,
+        sellCount: 1,
+        uniqueSymbols: 1,
+        observationDays: 3,
+        firstTradeDate: '2026-03-17',
+        lastTradeDate: '2026-03-19',
+      },
+      dimensions: [
+        { key: 'activity', score: 35, available: true, evidence: { tradesPer30d: 2 } },
+        { key: 'short_horizon', score: 80, available: true, evidence: { medianHoldingDays: 2 } },
+        { key: 'concentration', score: 100, available: true, evidence: { topWeightPct: 100 } },
+        { key: 'scale_in', score: null, available: false, evidence: { scaleInRatioPct: null } },
+        { key: 'profit_taking', score: null, available: false, evidence: { profitableSellRatioPct: null } },
+        { key: 'sizing_consistency', score: null, available: false, evidence: { tradeSizeCv: null } },
+      ],
+      limitations: ['insufficient_observation_window'],
+      methodologyVersion: 'portfolio-style-v1',
+    });
     refreshFx.mockResolvedValue({
       asOf: '2026-03-19',
       accountCount: 1,
@@ -324,6 +375,36 @@ describe('PortfolioPage FX refresh', () => {
       dryRun: true,
       errors: [],
     });
+    parseImageImport.mockResolvedValue({
+      sourceHash: 'a'.repeat(64),
+      recordCount: 1,
+      records: [
+        {
+          tradeDate: '2026-07-29',
+          symbol: '600693',
+          stockName: '东百集团',
+          side: 'buy',
+          quantity: 200,
+          price: 8.67,
+          fee: 0,
+          tax: 0,
+          currency: 'CNY',
+          confidence: 'high',
+          warning: '费用未显示，请核对',
+          sourceIndex: 0,
+        },
+      ],
+      warnings: ['请核对费用'],
+    });
+    commitImageImport.mockResolvedValue({
+      accountId: 1,
+      recordCount: 1,
+      insertedCount: 1,
+      duplicateCount: 0,
+      failedCount: 0,
+      dryRun: false,
+      errors: [],
+    });
     createAccount.mockResolvedValue({ id: 1 });
     deleteAccount.mockResolvedValue({ deleted: 1 });
     analyzePosition.mockResolvedValue({
@@ -345,13 +426,81 @@ describe('PortfolioPage FX refresh', () => {
     );
   }
 
-  it('uses fast portfolio valuation for page snapshot and risk loads', async () => {
+  it('uses realtime portfolio valuation for page snapshot and risk loads', async () => {
     render(<PortfolioPage />);
 
     await waitForInitialLoad();
 
-    expect(getSnapshot).toHaveBeenCalledWith({ accountId: undefined, costMethod: 'fifo', includeRealtime: false });
-    expect(getRisk).toHaveBeenCalledWith({ accountId: undefined, costMethod: 'fifo', includeRealtime: false });
+    expect(getSnapshot).toHaveBeenCalledWith({ accountId: undefined, costMethod: 'fifo', includeRealtime: true });
+    expect(getRisk).toHaveBeenCalledWith({ accountId: undefined, costMethod: 'fifo', includeRealtime: true });
+  });
+
+  it('refreshes the displayed price and holding P/L when the window regains focus', async () => {
+    const staleSnapshot = makeSnapshot({
+      totalCash: 2509.14,
+      totalMarketValue: 4628,
+      totalEquity: 7137.14,
+      holdingPnl: 35.97,
+      positions: [makePosition({
+        symbol: '605299',
+        stockName: '舒华体育',
+        quantity: 400,
+        holdingAvgCost: 11.480075,
+        holdingTotalCost: 4592.03,
+        lastPrice: 11.57,
+        marketValueBase: 4628,
+        holdingPnlBase: 35.97,
+        holdingPnlPct: 0.78,
+        priceSource: 'history_close',
+        priceDate: '2026-07-29',
+        priceStale: true,
+      })],
+    });
+    const realtimeSnapshot = makeSnapshot({
+      totalCash: 2509.14,
+      totalMarketValue: 4400,
+      totalEquity: 6909.14,
+      holdingPnl: -192.03,
+      dailyPnl: -228,
+      positions: [makePosition({
+        symbol: '605299',
+        stockName: '舒华体育',
+        quantity: 400,
+        holdingAvgCost: 11.480075,
+        holdingTotalCost: 4592.03,
+        lastPrice: 11,
+        marketValueBase: 4400,
+        holdingPnlBase: -192.03,
+        holdingPnlPct: -4.18,
+        dailyPnlBase: -228,
+        priceSource: 'tickflow',
+        priceDate: '2026-07-30',
+        priceStale: false,
+      })],
+    });
+    getSnapshot
+      .mockResolvedValueOnce(staleSnapshot)
+      .mockResolvedValue(realtimeSnapshot);
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    expect(await screen.findByText('11.5700')).toBeInTheDocument();
+    expect(screen.getAllByText('CNY 35.97').length).toBeGreaterThan(0);
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    await waitFor(() => expect(getSnapshot).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('11.0000')).toBeInTheDocument();
+    expect(screen.getAllByText('CNY -192.03').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('CNY -228.00').length).toBeGreaterThan(0);
+    expect(getSnapshot).toHaveBeenLastCalledWith({
+      accountId: undefined,
+      costMethod: 'fifo',
+      includeRealtime: true,
+    });
   });
 
   it('renders stale FX status with a manual refresh button', async () => {
@@ -488,7 +637,7 @@ describe('PortfolioPage FX refresh', () => {
     fireEvent.change(accountSelect, { target: { value: '1' } });
 
     await waitFor(() => {
-      expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false });
+      expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: true });
     });
 
     const snapshotCallsBeforeRefresh = getSnapshot.mock.calls.length;
@@ -572,10 +721,37 @@ describe('PortfolioPage FX refresh', () => {
     expect(hkRow).not.toBeNull();
     expect(aaplRow).not.toBeNull();
 
-    const hkRowCells = within(hkRow as HTMLTableRowElement).getAllByRole('cell');
-    const aaplRowCells = within(aaplRow as HTMLTableRowElement).getAllByRole('cell');
-    expect(hkRowCells.at(-3)).toHaveClass('text-success');
-    expect(aaplRowCells.at(-3)).toHaveClass('text-secondary');
+    expect(within(hkRow as HTMLTableRowElement).getByText('+5.00%').closest('td')).toHaveClass('text-success');
+    expect(within(aaplRow as HTMLTableRowElement).getAllByText('--')[1].closest('td')).toHaveClass('text-secondary');
+  });
+
+  it('renders diluted holding-cycle profit for a same-day T trade', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ positions: [
+      makePosition({
+        symbol: '600693',
+        quantity: 200,
+        avgCost: 8.67,
+        totalCost: 1734,
+        lastPrice: 8.61,
+        marketValueBase: 1722,
+        unrealizedPnlBase: -12,
+        unrealizedPnlPct: -0.69,
+        holdingAvgCost: 6.4,
+        holdingTotalCost: 1280,
+        holdingPnlBase: 442,
+        holdingPnlPct: 34.53125,
+        holdingCycleStartDate: '2026-07-24',
+      }),
+    ] }));
+
+    render(<PortfolioPage />);
+
+    const row = (await screen.findByText('600693')).closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLTableRowElement).getByText('6.4000')).toBeInTheDocument();
+    expect(within(row as HTMLTableRowElement).getByText('CNY 442.00')).toBeInTheDocument();
+    expect(within(row as HTMLTableRowElement).getByText('+34.53%')).toBeInTheDocument();
+    expect(within(row as HTMLTableRowElement).queryByText('CNY -12.00')).not.toBeInTheDocument();
   });
 
   it('loads latest active signals for holdings without scanning paginated signal lists', async () => {
@@ -658,7 +834,7 @@ describe('PortfolioPage FX refresh', () => {
     fireEvent.change(accountSelect, { target: { value: '2' } });
 
     await waitFor(() => {
-      expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 2, costMethod: 'fifo', includeRealtime: false });
+      expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 2, costMethod: 'fifo', includeRealtime: true });
     });
     expect(screen.queryByText('账号信号')).not.toBeInTheDocument();
     expect(getLatestDecisionSignals).toHaveBeenCalledTimes(signalCallsBeforeSwitch);
@@ -1010,13 +1186,13 @@ describe('PortfolioPage FX refresh', () => {
 
     const accountSelect = screen.getAllByRole('combobox')[0];
     fireEvent.change(accountSelect, { target: { value: '1' } });
-    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false }));
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: true }));
 
     fireEvent.click(screen.getByRole('button', { name: '刷新汇率' }));
     expect(await screen.findByRole('button', { name: '刷新中...' })).toBeDisabled();
 
     fireEvent.change(accountSelect, { target: { value: '2' } });
-    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 2, costMethod: 'fifo', includeRealtime: false }));
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 2, costMethod: 'fifo', includeRealtime: true }));
     await waitFor(() => expect(screen.getByRole('button', { name: '刷新汇率' })).not.toBeDisabled());
 
     const snapshotCallsAfterSwitch = getSnapshot.mock.calls.length;
@@ -1060,7 +1236,7 @@ describe('PortfolioPage FX refresh', () => {
     expect(await screen.findByRole('button', { name: '刷新中...' })).toBeDisabled();
 
     fireEvent.change(costMethodSelect, { target: { value: 'avg' } });
-    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: undefined, costMethod: 'avg', includeRealtime: false }));
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: undefined, costMethod: 'avg', includeRealtime: true }));
     await waitFor(() => expect(screen.getByRole('button', { name: '刷新汇率' })).not.toBeDisabled());
 
     const snapshotCallsAfterSwitch = getSnapshot.mock.calls.length;
@@ -1095,7 +1271,7 @@ describe('PortfolioPage FX refresh', () => {
     const accountSelect = screen.getAllByRole('combobox')[0];
     fireEvent.change(accountSelect, { target: { value: '1' } });
 
-    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false }));
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: true }));
     fireEvent.click(screen.getByRole('button', { name: '删除账户' }));
 
     const dialog = await screen.findByText('删除持仓账户');
@@ -1108,5 +1284,81 @@ describe('PortfolioPage FX refresh', () => {
     await waitFor(() => expect(getAccounts).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText('Main (#1)')).not.toBeInTheDocument());
     expect(screen.getByRole('option', { name: 'Alt (#2)' })).toBeInTheDocument();
+  });
+
+  it('keeps the latest account dashboard when an older snapshot resolves late', async () => {
+    getAccounts.mockResolvedValueOnce(makeAccounts([
+      { id: 1, name: 'Main' },
+      { id: 2, name: 'Alt' },
+    ]));
+    const accountOneSnapshot = deferredPromise<ReturnType<typeof makeSnapshot>>();
+    getSnapshot.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => {
+      if (accountId === 1) return accountOneSnapshot.promise;
+      if (accountId === 2) {
+        return makeSnapshot({
+          accountId: 2,
+          positions: [makePosition({ symbol: '000002', stockName: '新账户持仓' })],
+        });
+      }
+      return makeSnapshot({ accountCount: 2, positions: [] });
+    });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({
+      accountId: 1,
+      costMethod: 'fifo',
+      includeRealtime: true,
+    }));
+
+    fireEvent.change(accountSelect, { target: { value: '2' } });
+    expect(await screen.findByText('000002')).toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: '账户' })).not.toBeInTheDocument();
+
+    await act(async () => {
+      accountOneSnapshot.resolve(makeSnapshot({
+        accountId: 1,
+        positions: [makePosition({ symbol: '000001', stockName: '旧账户持仓' })],
+      }));
+      await accountOneSnapshot.promise;
+    });
+
+    expect(screen.queryByText('000001')).not.toBeInTheDocument();
+    expect(screen.getByText('000002')).toBeInTheDocument();
+  });
+
+  it('previews editable screenshot trades before committing them to the selected account', async () => {
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({
+      accountId: 1,
+      costMethod: 'fifo',
+      includeRealtime: true,
+    }));
+
+    const pickerLabel = screen.getByText('选择交易截图').closest('label');
+    const picker = pickerLabel?.querySelector('input[type="file"]');
+    expect(picker).not.toBeNull();
+    const file = new File([new Uint8Array([137, 80, 78, 71])], 'trade.png', { type: 'image/png' });
+    fireEvent.change(picker as HTMLInputElement, { target: { files: [file] } });
+    fireEvent.click(screen.getByRole('button', { name: '识别并预览' }));
+
+    expect(await screen.findByDisplayValue('东百集团')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('图片price 1'), { target: { value: '8.68' } });
+    fireEvent.click(screen.getByRole('button', { name: '确认导入 1 笔' }));
+
+    await waitFor(() => expect(commitImageImport).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 1,
+      sourceHash: 'a'.repeat(64),
+      dryRun: false,
+      records: [expect.objectContaining({ symbol: '600693', price: 8.68 })],
+    })));
+    expect(await screen.findByText(/写入 1 条，重复 0 条，失败 0 条/)).toBeInTheDocument();
   });
 });

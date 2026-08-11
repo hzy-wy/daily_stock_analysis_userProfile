@@ -151,15 +151,27 @@ class PortfolioCorporateActionListResponse(BaseModel):
 
 class PortfolioPositionItem(BaseModel):
     symbol: str
+    stock_name: Optional[str] = None
     market: str
     currency: str
     quantity: float
+    available_quantity: Optional[float] = None
     avg_cost: float
     total_cost: float
     last_price: float
     market_value_base: float
     unrealized_pnl_base: float
     unrealized_pnl_pct: Optional[float] = None
+    holding_avg_cost: Optional[float] = None
+    holding_total_cost: Optional[float] = None
+    holding_pnl_base: Optional[float] = None
+    holding_pnl_pct: Optional[float] = None
+    holding_cycle_start_date: Optional[str] = None
+    holding_days: Optional[int] = None
+    daily_pnl_base: Optional[float] = None
+    daily_pnl_pct: Optional[float] = None
+    position_weight_pct: Optional[float] = None
+    break_even_pct: Optional[float] = None
     valuation_currency: str
     price_source: str = "unknown"
     price_provider: Optional[str] = None
@@ -188,6 +200,8 @@ class PortfolioAccountSnapshot(BaseModel):
     total_cash: float
     total_market_value: float
     total_equity: float
+    holding_pnl: float = 0.0
+    daily_pnl: Optional[float] = None
     realized_pnl: float
     unrealized_pnl: float
     fee_total: float
@@ -206,6 +220,8 @@ class PortfolioSnapshotResponse(BaseModel):
     total_cash: float
     total_market_value: float
     total_equity: float
+    holding_pnl: float = 0.0
+    daily_pnl: Optional[float] = None
     realized_pnl: float
     unrealized_pnl: float
     fee_total: float
@@ -214,6 +230,44 @@ class PortfolioSnapshotResponse(BaseModel):
     data_quality: str = "ok"
     limitations: List[str] = Field(default_factory=list)
     accounts: List[PortfolioAccountSnapshot] = Field(default_factory=list)
+
+
+class PortfolioTraderProfileDimension(BaseModel):
+    key: Literal[
+        "activity",
+        "short_horizon",
+        "concentration",
+        "scale_in",
+        "profit_taking",
+        "sizing_consistency",
+    ]
+    score: Optional[int] = Field(None, ge=0, le=100)
+    available: bool
+    evidence: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PortfolioTraderProfileSample(BaseModel):
+    trade_count: int = 0
+    buy_count: int = 0
+    sell_count: int = 0
+    unique_symbols: int = 0
+    observation_days: int = 0
+    first_trade_date: Optional[str] = None
+    last_trade_date: Optional[str] = None
+
+
+class PortfolioTraderProfileResponse(BaseModel):
+    scope: Literal["account", "all_accounts"]
+    account_id: Optional[int] = None
+    as_of: str
+    status: Literal["forming", "ready"]
+    confidence: Literal["low", "medium", "high"]
+    confidence_score: int = Field(ge=0, le=100)
+    archetype: str
+    sample: PortfolioTraderProfileSample
+    dimensions: List[PortfolioTraderProfileDimension] = Field(default_factory=list)
+    limitations: List[str] = Field(default_factory=list)
+    methodology_version: str
 
 
 class PortfolioImportTradeItem(BaseModel):
@@ -246,6 +300,35 @@ class PortfolioImportCommitResponse(BaseModel):
     failed_count: int
     dry_run: bool
     errors: List[str] = Field(default_factory=list)
+
+
+class PortfolioImageImportTradeItem(BaseModel):
+    trade_date: date
+    symbol: str = Field(..., min_length=1, max_length=16)
+    stock_name: Optional[str] = Field(None, max_length=64)
+    side: Literal["buy", "sell"]
+    quantity: float = Field(..., gt=0)
+    price: float = Field(..., gt=0)
+    fee: float = Field(0.0, ge=0)
+    tax: float = Field(0.0, ge=0)
+    currency: Optional[str] = Field(None, min_length=3, max_length=8)
+    confidence: Literal["high", "medium", "low"] = "medium"
+    warning: Optional[str] = Field(None, max_length=255)
+    source_index: int = Field(0, ge=0)
+
+
+class PortfolioImageImportParseResponse(BaseModel):
+    source_hash: str
+    record_count: int
+    records: List[PortfolioImageImportTradeItem] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class PortfolioImageImportCommitRequest(BaseModel):
+    account_id: int
+    source_hash: str = Field(..., min_length=64, max_length=64)
+    dry_run: bool = False
+    records: List[PortfolioImageImportTradeItem] = Field(..., min_length=1, max_length=200)
 
 
 class PortfolioImportBrokerItem(BaseModel):

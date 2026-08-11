@@ -7,6 +7,7 @@ import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import { ApiErrorAlert, Card, Badge, ConfirmDialog, EmptyState, InlineAlert } from '../components/common';
 import { PortfolioSignalSummary } from '../components/decision-signals/DecisionSignalDisplay';
+import { TraderStyleProfileCard } from '../components/portfolio';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { formatUiText } from '../i18n/uiText';
 import { PORTFOLIO_TEXT } from '../locales/featureText';
@@ -40,6 +41,8 @@ import type {
   PortfolioCorporateActionListItem,
   PortfolioCorporateActionType,
   PortfolioCostMethod,
+  PortfolioImageImportParseResponse,
+  PortfolioImageImportTradeItem,
   PortfolioImportBrokerItem,
   PortfolioImportCommitResponse,
   PortfolioImportParseResponse,
@@ -47,6 +50,7 @@ import type {
   PortfolioRiskResponse,
   PortfolioSide,
   PortfolioSnapshotResponse,
+  PortfolioTraderProfileResponse,
   PortfolioTradeListItem,
 } from '../types/portfolio';
 import { areStockCodesEquivalent, normalizeStockCode } from '../utils/stockCode';
@@ -56,6 +60,7 @@ import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../utils/de
 const PIE_COLORS = ['#00d4ff', '#00ff88', '#ffaa00', '#ff7a45', '#7f8cff', '#ff4466'];
 const DEFAULT_PAGE_SIZE = 20;
 const PORTFOLIO_SIGNAL_LOOKUP_CONCURRENCY = 6;
+const PORTFOLIO_REALTIME_REFRESH_INTERVAL_MS = 30_000;
 const FALLBACK_BROKERS: PortfolioImportBrokerItem[] = [
   { broker: 'huatai', aliases: [], displayName: '华泰' },
   { broker: 'citic', aliases: ['zhongxin'], displayName: '中信' },
@@ -204,17 +209,24 @@ const PortfolioPage: React.FC = () => {
   const [costMethod, setCostMethod] = useState<PortfolioCostMethod>('fifo');
   const [snapshot, setSnapshot] = useState<PortfolioSnapshotResponse | null>(null);
   const [risk, setRisk] = useState<PortfolioRiskResponse | null>(null);
+  const [traderProfile, setTraderProfile] = useState<PortfolioTraderProfileResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [fxRefreshing, setFxRefreshing] = useState(false);
   const [fxRefreshFeedback, setFxRefreshFeedback] = useState<FxRefreshFeedback | null>(null);
   const [error, setError] = useState<ParsedApiError | null>(null);
   const [riskWarning, setRiskWarning] = useState<string | null>(null);
+  const [traderProfileWarning, setTraderProfileWarning] = useState<string | null>(null);
+  const [realtimeQuoteWarning, setRealtimeQuoteWarning] = useState<string | null>(null);
   const [writeWarning, setWriteWarning] = useState<string | null>(null);
   const [portfolioSignals, setPortfolioSignals] = useState<DecisionSignalItem[]>([]);
   const [portfolioSignalsLoading, setPortfolioSignalsLoading] = useState(false);
   const [portfolioSignalsWarning, setPortfolioSignalsWarning] = useState<string | null>(null);
   const [portfolioSignalsRefreshKey, setPortfolioSignalsRefreshKey] = useState(0);
   const portfolioSignalsRequestRef = useRef(0);
+  const dashboardRequestRef = useRef(0);
+  const realtimeSnapshotRequestRef = useRef(0);
+  const realtimeSnapshotInFlightRef = useRef(false);
+  const eventRequestRef = useRef(0);
   const [positionAnalysisLoadingKey, setPositionAnalysisLoadingKey] = useState<string | null>(null);
   const [positionAnalysisMessage, setPositionAnalysisMessage] = useState<string | null>(null);
 
@@ -227,6 +239,11 @@ const PortfolioPage: React.FC = () => {
   const [csvParseResult, setCsvParseResult] = useState<PortfolioImportParseResponse | null>(null);
   const [csvCommitResult, setCsvCommitResult] = useState<PortfolioImportCommitResponse | null>(null);
   const [brokerLoadWarning, setBrokerLoadWarning] = useState<string | null>(null);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imageParsing, setImageParsing] = useState(false);
+  const [imageCommitting, setImageCommitting] = useState(false);
+  const [imageParseResult, setImageParseResult] = useState<PortfolioImageImportParseResponse | null>(null);
+  const [imageCommitResult, setImageCommitResult] = useState<PortfolioImportCommitResponse | null>(null);
 
   const [eventType, setEventType] = useState<EventType>('trade');
   const [eventDateFrom, setEventDateFrom] = useState('');
@@ -338,40 +355,126 @@ const PortfolioPage: React.FC = () => {
   }, [selectedBroker]);
 
   const loadSnapshotAndRisk = useCallback(async () => {
+    const requestId = dashboardRequestRef.current + 1;
+    dashboardRequestRef.current = requestId;
+    const isActiveRequest = () => dashboardRequestRef.current === requestId;
     setIsLoading(true);
     setRiskWarning(null);
+    setTraderProfileWarning(null);
+    setSnapshot(null);
+    setRisk(null);
+    setTraderProfile(null);
     try {
       const snapshotData = await portfolioApi.getSnapshot({
         accountId: queryAccountId,
         costMethod,
-        includeRealtime: false,
+        includeRealtime: true,
       });
+      if (!isActiveRequest()) return;
       setSnapshot(snapshotData);
       setError(null);
+      setRealtimeQuoteWarning(null);
 
-      try {
-        const riskData = await portfolioApi.getRisk({
+      const [riskResult, profileResult] = await Promise.allSettled([
+        portfolioApi.getRisk({
           accountId: queryAccountId,
           costMethod,
-          includeRealtime: false,
-        });
-        setRisk(riskData);
-      } catch (riskErr) {
+          includeRealtime: true,
+        }),
+        portfolioApi.getTraderProfile({
+          accountId: queryAccountId,
+          costMethod,
+        }),
+      ]);
+      if (!isActiveRequest()) return;
+      if (riskResult.status === 'fulfilled') {
+        setRisk(riskResult.value);
+      } else {
         setRisk(null);
-        const parsed = getParsedApiError(riskErr);
+        const parsed = getParsedApiError(riskResult.reason);
         setRiskWarning(parsed.message || '风险数据获取失败，已降级为仅展示快照数据。');
       }
+      if (profileResult.status === 'fulfilled') {
+        setTraderProfile(profileResult.value);
+      } else {
+        setTraderProfile(null);
+        const parsed = getParsedApiError(profileResult.reason);
+        setTraderProfileWarning(
+          parsed.message
+          || (language === 'en'
+            ? 'The trader-style profile could not be rebuilt. Portfolio data remains available.'
+            : '交易风格画像暂时无法重建，持仓数据仍可正常使用。'),
+        );
+      }
     } catch (err) {
+      if (!isActiveRequest()) return;
       setSnapshot(null);
       setRisk(null);
+      setTraderProfile(null);
       setError(getParsedApiError(err));
     } finally {
-      setIsLoading(false);
+      if (isActiveRequest()) {
+        setIsLoading(false);
+      }
     }
-  }, [queryAccountId, costMethod]);
+  }, [queryAccountId, costMethod, language]);
+
+  const loadRealtimeSnapshot = useCallback(async () => {
+    if (realtimeSnapshotInFlightRef.current) return;
+
+    const requestId = realtimeSnapshotRequestRef.current + 1;
+    realtimeSnapshotRequestRef.current = requestId;
+    const requestedViewKey = refreshViewKey;
+    const dashboardRequestId = dashboardRequestRef.current;
+    realtimeSnapshotInFlightRef.current = true;
+
+    try {
+      const snapshotData = await portfolioApi.getSnapshot({
+        accountId: queryAccountId,
+        costMethod,
+        includeRealtime: true,
+      });
+      const isCurrentRequest = (
+        realtimeSnapshotRequestRef.current === requestId
+        && refreshContextRef.current.viewKey === requestedViewKey
+        && dashboardRequestRef.current === dashboardRequestId
+      );
+      if (!isCurrentRequest) return;
+
+      setSnapshot(snapshotData);
+      setError(null);
+      setRealtimeQuoteWarning(null);
+    } catch (err) {
+      const isCurrentRequest = (
+        realtimeSnapshotRequestRef.current === requestId
+        && refreshContextRef.current.viewKey === requestedViewKey
+        && dashboardRequestRef.current === dashboardRequestId
+      );
+      if (!isCurrentRequest) return;
+
+      const parsed = getParsedApiError(err);
+      setRealtimeQuoteWarning(
+        parsed.message
+        || (language === 'en'
+          ? 'The live quote refresh failed. The last displayed prices are being retained.'
+          : '实时行情刷新失败，当前继续保留上一次成功获取的价格。'),
+      );
+    } finally {
+      if (realtimeSnapshotRequestRef.current === requestId) {
+        realtimeSnapshotInFlightRef.current = false;
+      }
+    }
+  }, [costMethod, language, queryAccountId, refreshViewKey]);
 
   const loadEventsPage = useCallback(async (page: number) => {
+    const requestId = eventRequestRef.current + 1;
+    eventRequestRef.current = requestId;
+    const isActiveRequest = () => eventRequestRef.current === requestId;
     setEventLoading(true);
+    setTradeEvents([]);
+    setCashEvents([]);
+    setCorporateEvents([]);
+    setEventTotal(0);
     try {
       if (eventType === 'trade') {
         const response = await portfolioApi.listTrades({
@@ -383,6 +486,7 @@ const PortfolioPage: React.FC = () => {
           page,
           pageSize: DEFAULT_PAGE_SIZE,
         });
+        if (!isActiveRequest()) return;
         setTradeEvents(response.items || []);
         setEventTotal(response.total || 0);
       } else if (eventType === 'cash') {
@@ -394,6 +498,7 @@ const PortfolioPage: React.FC = () => {
           page,
           pageSize: DEFAULT_PAGE_SIZE,
         });
+        if (!isActiveRequest()) return;
         setCashEvents(response.items || []);
         setEventTotal(response.total || 0);
       } else {
@@ -406,13 +511,17 @@ const PortfolioPage: React.FC = () => {
           page,
           pageSize: DEFAULT_PAGE_SIZE,
         });
+        if (!isActiveRequest()) return;
         setCorporateEvents(response.items || []);
         setEventTotal(response.total || 0);
       }
     } catch (err) {
+      if (!isActiveRequest()) return;
       setError(getParsedApiError(err));
     } finally {
-      setEventLoading(false);
+      if (isActiveRequest()) {
+        setEventLoading(false);
+      }
     }
   }, [
     eventActionType,
@@ -441,6 +550,30 @@ const PortfolioPage: React.FC = () => {
   useEffect(() => {
     void loadSnapshotAndRisk();
   }, [loadSnapshotAndRisk]);
+
+  useEffect(() => {
+    if (!hasAccounts) return undefined;
+
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void loadRealtimeSnapshot();
+      }
+    };
+    const intervalId = window.setInterval(
+      refreshWhenVisible,
+      PORTFOLIO_REALTIME_REFRESH_INTERVAL_MS,
+    );
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    window.addEventListener('focus', refreshWhenVisible);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+      window.removeEventListener('focus', refreshWhenVisible);
+      realtimeSnapshotRequestRef.current += 1;
+      realtimeSnapshotInFlightRef.current = false;
+    };
+  }, [hasAccounts, loadRealtimeSnapshot]);
 
   useEffect(() => {
     void loadEvents();
@@ -480,6 +613,35 @@ const PortfolioPage: React.FC = () => {
     rows.sort((a, b) => Number(b.marketValueBase || 0) - Number(a.marketValueBase || 0));
     return rows;
   }, [snapshot]);
+
+  const holdingPnlTotal = useMemo(() => {
+    if (snapshot?.holdingPnl !== null && snapshot?.holdingPnl !== undefined) {
+      return Number(snapshot.holdingPnl);
+    }
+    if (selectedAccount === 'all') {
+      return Number(snapshot?.unrealizedPnl ?? 0);
+    }
+    return positionRows.reduce(
+      (total, row) => total + Number(row.holdingPnlBase ?? row.unrealizedPnlBase ?? 0),
+      0,
+    );
+  }, [positionRows, selectedAccount, snapshot]);
+  const dailyPnlRows = useMemo(
+    () => positionRows.filter((row) => row.dailyPnlBase !== null && row.dailyPnlBase !== undefined),
+    [positionRows],
+  );
+  const dailyPnlTotal = useMemo(() => {
+    if (snapshot?.dailyPnl !== null && snapshot?.dailyPnl !== undefined) {
+      return Number(snapshot.dailyPnl);
+    }
+    if (selectedAccount === 'all' || dailyPnlRows.length !== positionRows.length) {
+      return null;
+    }
+    return dailyPnlRows.reduce((total, row) => total + Number(row.dailyPnlBase ?? 0), 0);
+  }, [dailyPnlRows, positionRows.length, selectedAccount, snapshot]);
+  const totalPositionWeight = snapshot?.totalEquity
+    ? (Number(snapshot.totalMarketValue || 0) / Number(snapshot.totalEquity)) * 100
+    : null;
 
   const snapshotMatchesAccountScope = useMemo(() => {
     if (!snapshot) return false;
@@ -727,6 +889,70 @@ const PortfolioPage: React.FC = () => {
     }
   };
 
+  const handleParseImage = async () => {
+    if (!imageFile) return;
+    try {
+      setImageParsing(true);
+      setError(null);
+      setImageCommitResult(null);
+      const parsed = await portfolioApi.parseImageImport(imageFile);
+      setImageParseResult(parsed);
+    } catch (err) {
+      setImageParseResult(null);
+      setError(getParsedApiError(err));
+    } finally {
+      setImageParsing(false);
+    }
+  };
+
+  const updateImageRecord = (
+    index: number,
+    field: keyof PortfolioImageImportTradeItem,
+    value: string | number,
+  ) => {
+    setImageParseResult((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        records: current.records.map((record, recordIndex) => (
+          recordIndex === index ? { ...record, [field]: value } : record
+        )),
+      };
+    });
+  };
+
+  const removeImageRecord = (index: number) => {
+    setImageParseResult((current) => {
+      if (!current) return current;
+      const records = current.records.filter((_, recordIndex) => recordIndex !== index);
+      return { ...current, records, recordCount: records.length };
+    });
+  };
+
+  const handleCommitImage = async () => {
+    if (!writableAccountId || !imageParseResult || imageParseResult.records.length === 0) {
+      setWriteWarning('请先选择具体账户，并完成图片识别与记录核对。');
+      return;
+    }
+    try {
+      setImageCommitting(true);
+      setError(null);
+      setWriteWarning(null);
+      const committed = await portfolioApi.commitImageImport({
+        accountId: writableAccountId,
+        sourceHash: imageParseResult.sourceHash,
+        records: imageParseResult.records,
+        dryRun: false,
+      });
+      setImageCommitResult(committed);
+      await refreshPortfolioData();
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setImageCommitting(false);
+    }
+  };
+
   const openDeleteDialog = (item: PendingDelete) => {
     if (!writableAccountId) {
       setWriteWarning('请先在右上角选择具体账户，再进行删除修正。');
@@ -856,19 +1082,20 @@ const PortfolioPage: React.FC = () => {
       const snapshotData = await portfolioApi.getSnapshot({
         accountId: requestedAccountId,
         costMethod: requestedCostMethod,
-        includeRealtime: false,
+        includeRealtime: true,
       });
       if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
         return false;
       }
       setSnapshot(snapshotData);
       setError(null);
+      setRealtimeQuoteWarning(null);
 
       try {
         const riskData = await portfolioApi.getRisk({
           accountId: requestedAccountId,
           costMethod: requestedCostMethod,
-          includeRealtime: false,
+          includeRealtime: true,
         });
         if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
           return false;
@@ -1140,10 +1367,33 @@ const PortfolioPage: React.FC = () => {
         />
       ) : null}
 
-      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+      {realtimeQuoteWarning ? (
+        <InlineAlert
+          variant="warning"
+          title={language === 'en' ? 'Quote refresh notice' : '行情刷新提示'}
+          message={realtimeQuoteWarning}
+          className="rounded-xl px-3 py-2 text-xs shadow-none"
+        />
+      ) : null}
+
+      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
         <Card variant="gradient" padding="md">
           <p className="text-xs text-secondary">{text.totalEquity}</p>
           <p className="mt-1 text-xl font-semibold text-foreground">{formatMoney(snapshot?.totalEquity, snapshot?.currency || 'CNY')}</p>
+        </Card>
+        <Card variant="gradient" padding="md">
+          <p className="text-xs text-secondary">{language === 'en' ? 'Holding P/L' : '持仓盈亏'}</p>
+          <p className={`mt-1 text-xl font-semibold ${holdingPnlTotal >= 0 ? 'text-success' : 'text-danger'}`}>
+            {formatMoney(snapshot ? holdingPnlTotal : null, snapshot?.currency || 'CNY')}
+          </p>
+        </Card>
+        <Card variant="gradient" padding="md">
+          <p className="text-xs text-secondary">{language === 'en' ? 'Today P/L' : '当日盈亏'}</p>
+          <p className={`mt-1 text-xl font-semibold ${
+            dailyPnlTotal == null ? 'text-secondary' : dailyPnlTotal >= 0 ? 'text-success' : 'text-danger'
+          }`}>
+            {formatMoney(snapshot ? dailyPnlTotal : null, snapshot?.currency || 'CNY')}
+          </p>
         </Card>
         <Card variant="gradient" padding="md">
           <p className="text-xs text-secondary">{text.totalMarketValue}</p>
@@ -1155,7 +1405,10 @@ const PortfolioPage: React.FC = () => {
         </Card>
         <Card variant="gradient" padding="md">
           <div className="flex items-start justify-between gap-3">
-            <p className="text-xs text-secondary">{text.fxStatus}</p>
+            <div>
+              <p className="text-xs text-secondary">{language === 'en' ? 'Position / FX' : '仓位 / 汇率状态'}</p>
+              <p className="mt-1 text-sm font-semibold text-foreground">{formatPct(totalPositionWeight)}</p>
+            </div>
             <button
               type="button"
               className="btn-secondary !px-3 !py-1 !text-xs shrink-0"
@@ -1199,18 +1452,20 @@ const PortfolioPage: React.FC = () => {
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-[860px] w-full text-sm">
+              <table className="min-w-[1480px] w-full text-sm">
                 <thead className="text-xs text-secondary border-b border-white/10">
                   <tr>
-                    <th className="text-left py-2 pr-2">{text.account}</th>
-                    <th className="text-left py-2 pr-2">{text.code}</th>
-                    <th className="text-right py-2 pr-2">{text.quantity}</th>
-                    <th className="text-right py-2 pr-2">{text.avgCost}</th>
-                    <th className="text-right py-2 pr-2">{text.lastPrice}</th>
-                    <th className="text-right py-2 pr-2">{text.marketValue}</th>
-                    <th className="text-right py-2 pr-3">{text.unrealizedPnl}</th>
-                    <th className="text-right py-2 pr-3">{text.returnPct}</th>
-                    <th className="min-w-[9rem] text-right py-2 pr-3">{t('decisionSignals.portfolioColumn')}</th>
+                    {selectedAccount === 'all' ? <th className="text-left py-2 pr-3">{text.account}</th> : null}
+                    <th className="text-left py-2 pr-3">{language === 'en' ? 'Security / Code' : '证券 / 代码'}</th>
+                    <th className="text-right py-2 pr-3">{text.marketValue}</th>
+                    <th className="text-right py-2 pr-3">{language === 'en' ? 'P/L / Return' : '盈亏 / 收益率'}</th>
+                    <th className="text-right py-2 pr-3">{language === 'en' ? 'Holding / Available' : '持仓 / 可用'}</th>
+                    <th className="text-right py-2 pr-3">{language === 'en' ? 'Cost / Price' : '成本 / 现价'}</th>
+                    <th className="text-right py-2 pr-3">{language === 'en' ? 'Today P/L' : '当日盈亏'}</th>
+                    <th className="text-right py-2 pr-3">{language === 'en' ? 'Weight / Days' : '个股仓位 / 持股天数'}</th>
+                    <th className="text-right py-2 pr-3">{language === 'en' ? 'Target / Stop' : '止盈 / 止损'}</th>
+                    <th className="text-right py-2 pr-3">{language === 'en' ? 'Tag / Break-even' : '标签 / 回本涨幅'}</th>
+                    <th className="min-w-[10rem] text-right py-2 pr-3">{t('decisionSignals.portfolioColumn')}</th>
                     <th className="w-20 text-right py-2">{text.action}</th>
                   </tr>
                 </thead>
@@ -1219,45 +1474,76 @@ const PortfolioPage: React.FC = () => {
                     const rowKey = `${row.accountId}-${row.symbol}-${row.market}`;
                     const analyzing = positionAnalysisLoadingKey === rowKey;
                     const signal = signalByPositionKey.get(rowKey);
+                    const holdingAvgCost = row.holdingAvgCost ?? row.avgCost;
+                    const holdingPnlBase = row.holdingPnlBase ?? row.unrealizedPnlBase;
+                    const holdingPnlPct = row.holdingPnlPct ?? row.unrealizedPnlPct;
+                    const stockName = signal?.stockName || row.stockName;
+                    const actionLabel = signal?.action
+                      ? decisionActionLabels[signal.action]
+                      : signal?.actionLabel || '--';
+                    const holdingMetricTitle = row.holdingCycleStartDate
+                      ? language === 'en'
+                        ? `Diluted across the holding cycle since ${row.holdingCycleStartDate}, including realized intraday trades`
+                        : `按 ${row.holdingCycleStartDate} 起的连续持仓周期摊薄，包含期间已实现的做 T 收益`
+                      : undefined;
                     return (
-                    <tr key={rowKey} className="border-b border-white/5">
-                      <td className="py-2 pr-2 text-secondary">{row.accountName}</td>
-                      <td className="py-2 pr-2 font-mono text-foreground">{row.symbol}</td>
-                      <td className="py-2 pr-2 text-right">{row.quantity.toFixed(2)}</td>
-                      <td className="py-2 pr-2 text-right">{row.avgCost.toFixed(4)}</td>
-                      <td className="py-2 pr-2 text-right">
-                        <div>{formatPositionPrice(row)}</div>
-                        <div className={`text-[11px] ${hasPositionPrice(row) ? 'text-secondary' : 'text-warning'}`}>
-                          {getPositionPriceLabel(row)}
+                    <tr key={rowKey} className="border-b border-white/5 hover:bg-white/[0.025]">
+                      {selectedAccount === 'all' ? <td className="py-3 pr-3 text-secondary">{row.accountName}</td> : null}
+                      <td className="py-3 pr-3">
+                        <div className="font-medium text-foreground">{stockName || row.symbol}</div>
+                        <div className="mt-0.5 font-mono text-[11px] text-secondary">
+                          {stockName ? row.symbol : String(row.market || '').toUpperCase()}
                         </div>
                       </td>
-                      <td className="py-2 pr-2 text-right">{formatPositionMoney(row.marketValueBase, row)}</td>
-                      <td
-                        className={`py-2 pr-3 text-right ${
-                          hasPositionPrice(row)
-                            ? row.unrealizedPnlBase >= 0
-                              ? 'text-success'
-                              : 'text-danger'
-                            : 'text-secondary'
-                        }`}
-                      >
-                        {formatPositionMoney(row.unrealizedPnlBase, row)}
+                      <td className="py-3 pr-3 text-right font-medium">
+                        {formatPositionMoney(row.marketValueBase, row)}
                       </td>
-                      <td
-                        className={`py-2 pr-3 text-right ${
-                          hasPositionPrice(row) && row.unrealizedPnlPct !== null && row.unrealizedPnlPct !== undefined
-                            ? row.unrealizedPnlPct >= 0
-                              ? 'text-success'
-                              : 'text-danger'
-                            : 'text-secondary'
-                        }`}
-                      >
-                        {formatSignedPct(row.unrealizedPnlPct)}
+                      <td className={`py-3 pr-3 text-right ${
+                        !hasPositionPrice(row) || holdingPnlPct == null
+                          ? 'text-secondary'
+                          : holdingPnlBase >= 0
+                            ? 'text-success'
+                            : 'text-danger'
+                      }`}>
+                        <div>{formatPositionMoney(holdingPnlBase, row)}</div>
+                        <div className="mt-0.5 text-[11px]">{formatSignedPct(holdingPnlPct)}</div>
                       </td>
-                      <td className="py-2 pr-3 text-right align-top">
+                      <td className="py-3 pr-3 text-right">
+                        <div>{row.quantity.toFixed(2)}</div>
+                        <div className="mt-0.5 text-[11px] text-secondary">{Number(row.availableQuantity ?? row.quantity).toFixed(2)}</div>
+                      </td>
+                      <td className="py-3 pr-3 text-right" title={holdingMetricTitle}>
+                        <div>{holdingAvgCost.toFixed(4)}</div>
+                        <div className={`mt-0.5 text-[11px] ${hasPositionPrice(row) ? 'text-secondary' : 'text-warning'}`}>
+                          <span>{formatPositionPrice(row)}</span>
+                          <span> · </span>
+                          <span>{getPositionPriceLabel(row)}</span>
+                        </div>
+                      </td>
+                      <td className={`py-3 pr-3 text-right ${
+                        row.dailyPnlBase == null ? 'text-secondary' : row.dailyPnlBase >= 0 ? 'text-success' : 'text-danger'
+                      }`}>
+                        <div>{row.dailyPnlBase == null ? '--' : formatPositionMoney(row.dailyPnlBase, row)}</div>
+                        <div className="mt-0.5 text-[11px]">{formatSignedPct(row.dailyPnlPct)}</div>
+                      </td>
+                      <td className="py-3 pr-3 text-right">
+                        <div>{formatPct(row.positionWeightPct)}</div>
+                        <div className="mt-0.5 text-[11px] text-secondary">{row.holdingDays ?? '--'} {language === 'en' ? 'days' : '日'}</div>
+                      </td>
+                      <td className="py-3 pr-3 text-right">
+                        <div>{signal?.targetPrice == null ? '--' : Number(signal.targetPrice).toFixed(3)}</div>
+                        <div className="mt-0.5 text-[11px] text-secondary">{signal?.stopLoss == null ? '--' : Number(signal.stopLoss).toFixed(3)}</div>
+                      </td>
+                      <td className="py-3 pr-3 text-right">
+                        <div><Badge variant="default">{actionLabel}</Badge></div>
+                        <div className="mt-1 text-[11px] text-secondary">
+                          {language === 'en' ? 'Break-even ' : '回本 '}{formatPct(row.breakEvenPct)}
+                        </div>
+                      </td>
+                      <td className="py-3 pr-3 text-right align-top">
                         <PortfolioSignalSummary item={signal} loading={portfolioSignalsLoading} />
                       </td>
-                      <td className="py-2 text-right">
+                      <td className="py-3 text-right">
                         <button
                           type="button"
                           onClick={() => void handleAnalyzePosition(row)}
@@ -1308,6 +1594,12 @@ const PortfolioPage: React.FC = () => {
           </div>
         </Card>
       </section>
+
+      <TraderStyleProfileCard
+        profile={traderProfile}
+        loading={isLoading && !traderProfile}
+        warning={traderProfileWarning}
+      />
 
       {writeBlocked && hasAccounts ? (
         <InlineAlert
@@ -1367,6 +1659,183 @@ const PortfolioPage: React.FC = () => {
               </>
             )}
           </div>
+        </Card>
+      </section>
+
+      <section>
+        <Card padding="md">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-foreground">图片识别录入交易</h3>
+              <p className="mt-1 text-xs text-secondary">
+                支持券商持仓/交易明细截图。AI 只生成候选记录，请核对并修改后再确认导入。
+              </p>
+            </div>
+            <div className="grid w-full gap-2 sm:grid-cols-3 lg:w-auto lg:min-w-[620px]">
+              <label className={PORTFOLIO_FILE_PICKER_CLASS}>
+                {imageFile ? imageFile.name : '选择交易截图'}
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif"
+                  className="hidden"
+                  onChange={(e) => {
+                    const nextFile = e.target.files?.[0] || null;
+                    setImageFile(nextFile);
+                    setImageParseResult(null);
+                    setImageCommitResult(null);
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={!imageFile || imageParsing}
+                onClick={() => void handleParseImage()}
+              >
+                {imageParsing ? '识别中...' : '识别并预览'}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={!writableAccountId || !imageParseResult?.records.length || imageCommitting}
+                onClick={() => void handleCommitImage()}
+              >
+                {imageCommitting ? '导入中...' : `确认导入 ${imageParseResult?.records.length || 0} 笔`}
+              </button>
+            </div>
+          </div>
+
+          {!writableAccountId ? (
+            <InlineAlert
+              variant="warning"
+              className="mt-3 rounded-lg px-3 py-2 text-xs shadow-none"
+              message="图片可以先识别预览；实际写入前，请在账户视图中选择一个具体账户。"
+            />
+          ) : null}
+          {imageParseResult?.warnings.length ? (
+            <InlineAlert
+              variant="warning"
+              title="识别提示"
+              message={imageParseResult.warnings.join('；')}
+              className="mt-3 rounded-lg px-3 py-2 text-xs shadow-none"
+            />
+          ) : null}
+          {imageCommitResult ? (
+            <InlineAlert
+              variant={imageCommitResult.failedCount > 0 ? 'warning' : 'success'}
+              title="图片导入结果"
+              message={`写入 ${imageCommitResult.insertedCount} 条，重复 ${imageCommitResult.duplicateCount} 条，失败 ${imageCommitResult.failedCount} 条。`}
+              className="mt-3 rounded-lg px-3 py-2 text-xs shadow-none"
+            />
+          ) : null}
+
+          {imageParseResult ? (
+            imageParseResult.records.length > 0 ? (
+              <div className="mt-4 overflow-x-auto">
+                <table className="min-w-[1240px] w-full text-xs">
+                  <thead className="border-b border-white/10 text-secondary">
+                    <tr>
+                      <th className="py-2 pr-2 text-left">日期</th>
+                      <th className="py-2 pr-2 text-left">证券代码</th>
+                      <th className="py-2 pr-2 text-left">证券名称</th>
+                      <th className="py-2 pr-2 text-left">方向</th>
+                      <th className="py-2 pr-2 text-right">数量</th>
+                      <th className="py-2 pr-2 text-right">成交价</th>
+                      <th className="py-2 pr-2 text-right">手续费</th>
+                      <th className="py-2 pr-2 text-right">税费</th>
+                      <th className="py-2 pr-2 text-left">币种</th>
+                      <th className="py-2 pr-2 text-left">识别状态</th>
+                      <th className="py-2 text-right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {imageParseResult.records.map((record, index) => (
+                      <tr key={`${record.sourceIndex}-${index}`} className="border-b border-white/5 align-top">
+                        <td className="py-2 pr-2">
+                          <input
+                            aria-label={`图片交易日期 ${index + 1}`}
+                            className={`${PORTFOLIO_INPUT_CLASS} !h-9 !px-2 !text-xs`}
+                            type="date"
+                            value={record.tradeDate}
+                            onChange={(e) => updateImageRecord(index, 'tradeDate', e.target.value)}
+                          />
+                        </td>
+                        <td className="py-2 pr-2">
+                          <input
+                            aria-label={`图片证券代码 ${index + 1}`}
+                            className={`${PORTFOLIO_INPUT_CLASS} !h-9 !px-2 !text-xs font-mono`}
+                            value={record.symbol}
+                            onChange={(e) => updateImageRecord(index, 'symbol', e.target.value.toUpperCase())}
+                          />
+                        </td>
+                        <td className="py-2 pr-2">
+                          <input
+                            aria-label={`图片证券名称 ${index + 1}`}
+                            className={`${PORTFOLIO_INPUT_CLASS} !h-9 !px-2 !text-xs`}
+                            value={record.stockName || ''}
+                            onChange={(e) => updateImageRecord(index, 'stockName', e.target.value)}
+                          />
+                        </td>
+                        <td className="py-2 pr-2">
+                          <select
+                            aria-label={`图片买卖方向 ${index + 1}`}
+                            className={`${PORTFOLIO_SELECT_CLASS} !h-9 !px-2 !pr-6 !text-xs`}
+                            value={record.side}
+                            onChange={(e) => updateImageRecord(index, 'side', e.target.value as PortfolioSide)}
+                          >
+                            <option value="buy">买入</option>
+                            <option value="sell">卖出</option>
+                          </select>
+                        </td>
+                        {(['quantity', 'price', 'fee', 'tax'] as const).map((field) => (
+                          <td key={field} className="py-2 pr-2">
+                            <input
+                              aria-label={`图片${field} ${index + 1}`}
+                              className={`${PORTFOLIO_INPUT_CLASS} !h-9 !px-2 !text-right !text-xs`}
+                              type="number"
+                              min="0"
+                              step="0.0001"
+                              value={record[field]}
+                              onChange={(e) => updateImageRecord(index, field, Number(e.target.value))}
+                            />
+                          </td>
+                        ))}
+                        <td className="py-2 pr-2">
+                          <input
+                            aria-label={`图片币种 ${index + 1}`}
+                            className={`${PORTFOLIO_INPUT_CLASS} !h-9 !px-2 !text-xs`}
+                            value={record.currency || ''}
+                            onChange={(e) => updateImageRecord(index, 'currency', e.target.value.toUpperCase())}
+                          />
+                        </td>
+                        <td className="max-w-[220px] py-2 pr-2">
+                          <Badge variant={record.confidence === 'high' ? 'success' : record.confidence === 'low' ? 'warning' : 'default'}>
+                            {record.confidence}
+                          </Badge>
+                          <div className="mt-1 break-words text-[11px] text-warning">{record.warning || '请核对后导入'}</div>
+                        </td>
+                        <td className="py-2 text-right">
+                          <button
+                            type="button"
+                            className="btn-secondary !px-2 !py-1 !text-xs text-danger"
+                            onClick={() => removeImageRecord(index)}
+                          >
+                            删除
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <EmptyState
+                title="未识别到可导入交易"
+                description="请换一张包含逐笔交易日期、方向、数量与成交价的清晰截图。"
+                className="mt-4 border-none bg-transparent px-4 py-6 shadow-none"
+              />
+            )
+          ) : null}
         </Card>
       </section>
 

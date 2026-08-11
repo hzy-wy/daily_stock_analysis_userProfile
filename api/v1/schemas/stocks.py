@@ -9,7 +9,7 @@
 2. 定义历史 K 线数据模型
 """
 
-from typing import Optional, List
+from typing import Dict, Literal, Optional, List
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -106,3 +106,66 @@ class StockHistoryResponse(BaseModel):
             "data": []
         }
     })
+
+
+class MarketDashboardIndex(BaseModel):
+    code: str
+    name: str
+    current: float
+    change: float
+    change_pct: float
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    prev_close: Optional[float] = None
+    volume: Optional[float] = None
+    amount: Optional[float] = None
+    amplitude: Optional[float] = None
+
+
+class MarketDashboardRankingItem(BaseModel):
+    name: str
+    change_pct: Optional[float] = None
+    source: Optional[str] = None
+
+
+class MarketDashboardBreadth(BaseModel):
+    available: bool
+    up_count: int = 0
+    down_count: int = 0
+    flat_count: int = 0
+    limit_up_count: int = 0
+    limit_down_count: int = 0
+    total_amount: float = 0.0
+
+
+class MarketDashboardRankings(BaseModel):
+    available: bool
+    top_sectors: List[MarketDashboardRankingItem] = Field(default_factory=list)
+    bottom_sectors: List[MarketDashboardRankingItem] = Field(default_factory=list)
+    top_concepts: List[MarketDashboardRankingItem] = Field(default_factory=list)
+    bottom_concepts: List[MarketDashboardRankingItem] = Field(default_factory=list)
+
+
+class MarketDashboardBlockStatus(BaseModel):
+    status: Literal["fresh", "stale", "refreshing", "unavailable", "unsupported"]
+    updated_at: Optional[str] = None
+    age_seconds: Optional[float] = None
+    message: Optional[str] = None
+
+
+class MarketDashboardResponse(BaseModel):
+    region: Literal["cn", "hk", "us", "jp", "kr"]
+    trade_date: str
+    generated_at: str
+    data_updated_at: Optional[str] = None
+    data_status: Literal["ok", "partial", "stale", "unavailable"] = "unavailable"
+    is_stale: bool = False
+    refreshing: bool = False
+    blocks: Dict[str, MarketDashboardBlockStatus] = Field(default_factory=dict)
+    indices: List[MarketDashboardIndex] = Field(default_factory=list)
+    breadth: MarketDashboardBreadth
+    rankings: MarketDashboardRankings
+    market_light: Dict[str, object] = Field(default_factory=dict)
+    coverage: Dict[str, bool] = Field(default_factory=dict)
+    source_label: str

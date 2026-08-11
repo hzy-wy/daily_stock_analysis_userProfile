@@ -25,6 +25,9 @@ from api.v1.schemas.portfolio import (
     PortfolioDeleteResponse,
     PortfolioEventCreatedResponse,
     PortfolioFxRefreshResponse,
+    PortfolioImageImportCommitRequest,
+    PortfolioImageImportParseResponse,
+    PortfolioImageImportTradeItem,
     PortfolioImportBrokerListResponse,
     PortfolioImportCommitResponse,
     PortfolioImportParseResponse,
@@ -32,10 +35,13 @@ from api.v1.schemas.portfolio import (
     PortfolioPositionAnalysisRequest,
     PortfolioRiskResponse,
     PortfolioSnapshotResponse,
+    PortfolioTraderProfileResponse,
     PortfolioTradeListResponse,
     PortfolioTradeCreateRequest,
 )
 from src.services.task_queue import get_task_queue
+from src.services.image_stock_extractor import MAX_SIZE_BYTES
+from src.services.portfolio_image_import_service import PortfolioImageImportService
 from src.services.portfolio_import_service import PortfolioImportService
 from src.services.portfolio_risk_service import PortfolioRiskService
 from src.services.portfolio_service import (
@@ -441,6 +447,31 @@ def get_snapshot(
         raise _internal_error("Get snapshot failed", exc)
 
 
+@router.get(
+    "/trader-profile",
+    response_model=PortfolioTraderProfileResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Get an explainable trader-style profile",
+)
+def get_trader_profile(
+    account_id: Optional[int] = Query(None, description="Optional account id, default aggregates all active accounts"),
+    as_of: Optional[date] = Query(None, description="Profile cutoff date, default today"),
+    cost_method: str = Query("fifo", description="Cost method used by the supporting position snapshot"),
+) -> PortfolioTraderProfileResponse:
+    service = PortfolioService()
+    try:
+        data = service.get_trader_profile(
+            account_id=account_id,
+            as_of=as_of,
+            cost_method=cost_method,
+        )
+        return PortfolioTraderProfileResponse(**data)
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Get trader profile failed", exc)
+
+
 @router.post(
     "/positions/{symbol}/analysis",
     status_code=202,
@@ -539,13 +570,25 @@ def _resolve_position_analysis_context(
         "account_id": account.get("account_id"),
         "account_name": account.get("account_name"),
         "symbol": position_symbol or target,
+        "stock_name": position.get("stock_name"),
         "market": position.get("market"),
         "currency": position.get("currency"),
         "quantity": position.get("quantity"),
+        "available_quantity": position.get("available_quantity"),
         "avg_cost": position.get("avg_cost"),
         "total_cost": position.get("total_cost"),
         "unrealized_pnl_base": position.get("unrealized_pnl_base"),
         "unrealized_pnl_pct": position.get("unrealized_pnl_pct"),
+        "holding_avg_cost": position.get("holding_avg_cost"),
+        "holding_total_cost": position.get("holding_total_cost"),
+        "holding_pnl_base": position.get("holding_pnl_base"),
+        "holding_pnl_pct": position.get("holding_pnl_pct"),
+        "holding_cycle_start_date": position.get("holding_cycle_start_date"),
+        "holding_days": position.get("holding_days"),
+        "daily_pnl_base": position.get("daily_pnl_base"),
+        "daily_pnl_pct": position.get("daily_pnl_pct"),
+        "position_weight_pct": position.get("position_weight_pct"),
+        "break_even_pct": position.get("break_even_pct"),
         "price_source": position.get("price_source"),
         "price_provider": position.get("price_provider"),
         "price_date": position.get("price_date"),
@@ -624,6 +667,66 @@ def commit_csv_import(
         raise _bad_request(exc)
     except Exception as exc:
         raise _internal_error("Commit CSV import failed", exc)
+
+
+@router.post(
+    "/imports/image/parse",
+    response_model=PortfolioImageImportParseResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Recognize trade records from a broker screenshot",
+)
+def parse_image_import(
+    file: UploadFile = File(...),
+) -> PortfolioImageImportParseResponse:
+    service = PortfolioImageImportService()
+    try:
+        content = file.file.read(MAX_SIZE_BYTES + 1)
+        parsed = service.parse_image(
+            content=content,
+            mime_type=file.content_type or "application/octet-stream",
+        )
+        return PortfolioImageImportParseResponse(
+            source_hash=parsed["source_hash"],
+            record_count=parsed["record_count"],
+            records=[
+                PortfolioImageImportTradeItem(**item)
+                for item in parsed.get("records", [])
+            ],
+            warnings=list(parsed.get("warnings", [])),
+        )
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Parse image import failed", exc)
+
+
+@router.post(
+    "/imports/image/commit",
+    response_model=PortfolioImportCommitResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Commit reviewed image-recognized trade records",
+)
+def commit_image_import(
+    request: PortfolioImageImportCommitRequest,
+) -> PortfolioImportCommitResponse:
+    service = PortfolioImageImportService()
+    try:
+        result = service.commit_records(
+            account_id=request.account_id,
+            source_hash=request.source_hash,
+            records=[
+                item.model_dump()
+                if hasattr(item, "model_dump")
+                else item.dict()
+                for item in request.records
+            ],
+            dry_run=request.dry_run,
+        )
+        return PortfolioImportCommitResponse(**result)
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Commit image import failed", exc)
 
 
 @router.post(

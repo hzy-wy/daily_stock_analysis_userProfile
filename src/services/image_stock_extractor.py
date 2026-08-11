@@ -236,7 +236,14 @@ def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
     return [k for k in cfg.openai_api_keys if k and len(k) >= 8]
 
 
-def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] = None) -> str:
+def _call_litellm_vision(
+    image_b64: str,
+    mime_type: str,
+    api_key: Optional[str] = None,
+    *,
+    prompt: str = EXTRACT_PROMPT,
+    max_tokens: int = 1024,
+) -> str:
     """Extract stock codes from an image using litellm (all providers via OpenAI vision format)."""
     global litellm
     cfg = get_config()
@@ -258,12 +265,12 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": EXTRACT_PROMPT},
+                    {"type": "text", "text": prompt},
                     {"type": "image_url", "image_url": {"url": data_url}},
                 ],
             }
         ],
-        "max_tokens": 1024,
+        "max_tokens": max_tokens,
         "api_key": key,
         "timeout": VISION_API_TIMEOUT,
     }
@@ -283,26 +290,14 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     raise ValueError("LiteLLM vision returned empty response")
 
 
-def extract_stock_codes_from_image(
+def run_vision_prompt_on_image(
     image_bytes: bytes,
     mime_type: str,
-) -> Tuple[List[Tuple[str, Optional[str], str]], str]:
-    """
-    从图片中提取股票代码及名称（使用 Vision LLM）。
-
-    优先级：Gemini -> Anthropic -> OpenAI（首个可用）。
-    支持多 Key 轮询与重试（最多 3 次，指数退避）。
-
-    Args:
-        image_bytes: 原始图片字节
-        mime_type: MIME 类型（如 image/jpeg, image/png）
-
-    Returns:
-        (items, raw_text) - items 为 [(code, name?, confidence), ...]，raw_text 为原始 LLM 响应。
-
-    Raises:
-        ValueError: 图片无效、未配置 Vision API 或提取失败时。
-    """
+    *,
+    prompt: str,
+    max_tokens: int = 2048,
+) -> str:
+    """Validate an image and run a caller-supplied prompt through Vision LLM."""
     mime_type = (mime_type or "image/jpeg").strip().lower().split(";")[0].strip()
     if mime_type not in ALLOWED_MIME:
         raise ValueError(f"不支持的图片类型: {mime_type}。允许: {list(ALLOWED_MIME)}")
@@ -314,6 +309,8 @@ def extract_stock_codes_from_image(
         raise ValueError(f"Image too large (max {MAX_SIZE_BYTES // (1024 * 1024)}MB)")
 
     _verify_image_magic_bytes(image_bytes, mime_type)
+    if not (prompt or "").strip():
+        raise ValueError("Vision prompt must not be empty")
 
     image_b64 = base64.b64encode(image_bytes).decode("ascii")
     model = _resolve_vision_model()
@@ -323,14 +320,13 @@ def extract_stock_codes_from_image(
     for attempt in range(3):
         try:
             key = random.choice(keys) if keys else None
-            raw = _call_litellm_vision(image_b64, mime_type, api_key=key)
-            logger.debug("[ImageExtractor] raw LLM response:\n%s", raw)
-            items = _parse_items_from_text(raw)
-            logger.info(
-                f"[ImageExtractor] {model} 提取 {len(items)} 个: "
-                f"{[(i[0], i[1]) for i in items[:5]]}{'...' if len(items) > 5 else ''}"
+            return _call_litellm_vision(
+                image_b64,
+                mime_type,
+                api_key=key,
+                prompt=prompt,
+                max_tokens=max_tokens,
             )
-            return items, raw
         except Exception as e:
             last_error = e
             if attempt < 2:
@@ -341,3 +337,26 @@ def extract_stock_codes_from_image(
     raise ValueError(
         f"Vision API 调用失败，请检查 API Key 与网络: {last_error}"
     ) from last_error
+
+
+def extract_stock_codes_from_image(
+    image_bytes: bytes,
+    mime_type: str,
+) -> Tuple[List[Tuple[str, Optional[str], str]], str]:
+    """Extract stock codes and names from an image using the shared Vision route."""
+
+    raw = run_vision_prompt_on_image(
+        image_bytes,
+        mime_type,
+        prompt=EXTRACT_PROMPT,
+        max_tokens=1024,
+    )
+    logger.debug("[ImageExtractor] raw LLM response:\n%s", raw)
+    items = _parse_items_from_text(raw)
+    logger.info(
+        "[ImageExtractor] extracted %s items: %s%s",
+        len(items),
+        [(item[0], item[1]) for item in items[:5]],
+        "..." if len(items) > 5 else "",
+    )
+    return items, raw

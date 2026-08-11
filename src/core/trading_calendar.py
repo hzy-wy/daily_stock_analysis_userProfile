@@ -175,6 +175,34 @@ def is_market_open(market: str, check_date: date) -> bool:
         return True
 
 
+def count_market_sessions(market: str, start_date: date, end_date: date) -> int:
+    """Count inclusive exchange sessions, with a weekday fallback."""
+
+    if end_date < start_date:
+        return 0
+
+    def _weekday_count() -> int:
+        current = start_date
+        count = 0
+        while current <= end_date:
+            if current.weekday() < 5:
+                count += 1
+            current += timedelta(days=1)
+        return count
+
+    if not _XCALS_AVAILABLE:
+        return _weekday_count()
+    exchange = MARKET_EXCHANGE.get(market)
+    if not exchange:
+        return _weekday_count()
+    try:
+        calendar = xcals.get_calendar(exchange)
+        return len(calendar.sessions_in_range(start_date, end_date))
+    except Exception as exc:
+        logger.warning("trading_calendar.count_market_sessions fallback: %s", exc)
+        return _weekday_count()
+
+
 def get_market_now(
     market: Optional[str], current_time: Optional[datetime] = None
 ) -> datetime:

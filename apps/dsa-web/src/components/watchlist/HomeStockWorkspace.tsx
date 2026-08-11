@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CircleAlert,
   Clock3,
+  Globe2,
   Loader2,
   Play,
   Plus,
@@ -23,7 +24,7 @@ import { truncateStockName } from '../../utils/stockName';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiTextKey, UiTextParams } from '../../i18n/uiText';
 
-export type HomeWorkspaceTab = 'watchlist' | 'today' | 'history';
+export type HomeWorkspaceTab = 'dashboard' | 'watchlist' | 'today' | 'history';
 export type WatchlistAnalyzeMode = 'all' | 'pending';
 
 export interface HomeWatchlistRow {
@@ -231,6 +232,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   const isTodayStatusUnavailable = watchlistRows.some((row) => row.isTodayStatusLoading || row.isTodayStatusUnknown);
   const topTodayItem = todayItems[0];
   const tabs: Array<{ key: HomeWorkspaceTab; label: string }> = [
+    { key: 'dashboard', label: t('watchlist.tabDashboard') },
     { key: 'history', label: t('watchlist.tabHistory') },
     { key: 'watchlist', label: t('watchlist.tabWatchlist') },
     { key: 'today', label: t('watchlist.tabToday') },
@@ -251,7 +253,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   };
 
   const renderTabs = (
-    <div className="grid grid-cols-3 gap-1 rounded-xl border border-subtle bg-base/40 p-1">
+    <div className="grid grid-cols-4 gap-1 rounded-xl border border-subtle bg-base/40 p-1">
       {tabs.map((tab) => {
         const selected = activeTab === tab.key;
         return (
@@ -270,6 +272,29 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
       })}
     </div>
   );
+
+  if (activeTab === 'dashboard') {
+    return (
+      <aside className={`glass-card flex min-h-0 flex-1 flex-col overflow-hidden ${className}`}>
+        <div className="space-y-3 border-b border-subtle px-3 py-3">
+          {renderTabs}
+          <DashboardPanelHeader
+            className="mb-0"
+            title={t('watchlist.dashboardTitle')}
+            titleClassName="text-sm font-medium"
+            leading={<Globe2 className="h-4 w-4 text-primary" aria-hidden="true" />}
+          />
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-5 text-center">
+          <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-primary/25 bg-primary/10 text-primary">
+            <Globe2 className="h-6 w-6" aria-hidden="true" />
+          </span>
+          <p className="mt-4 text-sm font-medium text-foreground">{t('watchlist.dashboardTitle')}</p>
+          <p className="mt-2 text-xs leading-5 text-secondary-text">{t('watchlist.dashboardDescription')}</p>
+        </div>
+      </aside>
+    );
+  }
 
   if (activeTab === 'history') {
     return (

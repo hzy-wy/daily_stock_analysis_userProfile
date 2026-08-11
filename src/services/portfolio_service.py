@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import statistics
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -13,6 +15,9 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.config import get_config
+from src.core.trading_calendar import count_market_sessions
+from src.data.stock_index_loader import get_index_stock_name
+from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
 from src.repositories.portfolio_repo import (
     DuplicateTradeDedupHashError,
     DuplicateTradeUidError,
@@ -94,6 +99,15 @@ class PortfolioOversellError(ValueError):
 class _AvgState:
     quantity: float = 0.0
     total_cost: float = 0.0
+
+
+@dataclass
+class _HoldingCycleState:
+    """Net invested capital for one continuous end-of-day holding cycle."""
+
+    quantity: float = 0.0
+    net_cost: float = 0.0
+    start_date: Optional[date] = None
 
 
 @dataclass(frozen=True)
@@ -222,7 +236,7 @@ class PortfolioService:
                     trade_uid=trade_uid_norm,
                     dedup_hash=dedup_hash_norm,
                     session=session,
-                    )
+                )
                 if side_norm == "sell":
                     self._validate_sell_quantity(
                         account_id=account_id,
@@ -383,6 +397,252 @@ class PortfolioService:
             "page_size": page_size,
         }
 
+    def get_trader_profile(
+        self,
+        *,
+        account_id: Optional[int] = None,
+        as_of: Optional[date] = None,
+        cost_method: str = "fifo",
+    ) -> Dict[str, Any]:
+        """Build a deterministic, explainable trader-style profile.
+
+        Scores describe behavioural tendencies, not investing skill.  The full
+        active trade ledger is used so pagination cannot change the result.
+        """
+
+        as_of_date = as_of or date.today()
+        method = self._normalize_cost_method(cost_method)
+        if account_id is not None:
+            self._require_active_account(account_id)
+
+        trades = [
+            row
+            for row in self.repo.list_trade_history(account_id=account_id)
+            if row.trade_date is not None and row.trade_date <= as_of_date
+        ]
+        snapshot = self.get_portfolio_snapshot(
+            account_id=account_id,
+            as_of=as_of_date,
+            cost_method=method,
+            include_realtime=False,
+        )
+
+        trade_count = len(trades)
+        buy_count = sum(1 for row in trades if str(row.side).lower() == "buy")
+        sell_count = sum(1 for row in trades if str(row.side).lower() == "sell")
+        unique_symbols = len({(int(row.account_id), str(row.symbol)) for row in trades})
+        first_trade_date = trades[0].trade_date if trades else None
+        last_trade_date = trades[-1].trade_date if trades else None
+        observation_days = (
+            (last_trade_date - first_trade_date).days + 1
+            if first_trade_date is not None and last_trade_date is not None
+            else 0
+        )
+
+        effective_days = max(30, observation_days or 0)
+        trades_per_30d = (trade_count * 30.0 / effective_days) if trade_count else 0.0
+        activity_score = self._profile_score(
+            100.0 * math.log1p(trades_per_30d) / math.log1p(12.0)
+        ) if trade_count else None
+
+        lots: Dict[Tuple[int, str, str, str], List[Dict[str, Any]]] = defaultdict(list)
+        open_quantities: Dict[Tuple[int, str, str, str], float] = defaultdict(float)
+        holding_days_samples: List[float] = []
+        matched_sell_results: List[float] = []
+        scale_in_count = 0
+        trade_notionals: List[float] = []
+        unmatched_sell_count = 0
+
+        for row in trades:
+            side = str(row.side or "").strip().lower()
+            quantity = max(0.0, float(row.quantity or 0.0))
+            price = max(0.0, float(row.price or 0.0))
+            fee = max(0.0, float(row.fee or 0.0))
+            tax = max(0.0, float(row.tax or 0.0))
+            if quantity <= EPS or price <= EPS or side not in VALID_SIDES:
+                continue
+            key = (
+                int(row.account_id),
+                self._normalize_symbol_for_position(row.symbol),
+                self._normalize_market(row.market),
+                self._normalize_currency(row.currency),
+            )
+            trade_notionals.append(quantity * price + fee + tax)
+            if side == "buy":
+                if open_quantities[key] > EPS:
+                    scale_in_count += 1
+                lots[key].append(
+                    {
+                        "quantity": quantity,
+                        "unit_cost": (quantity * price + fee + tax) / quantity,
+                        "trade_date": row.trade_date,
+                    }
+                )
+                open_quantities[key] += quantity
+                continue
+
+            remaining = quantity
+            matched_cost = 0.0
+            matched_quantity = 0.0
+            while remaining > EPS and lots[key]:
+                lot = lots[key][0]
+                matched = min(remaining, float(lot["quantity"]))
+                matched_cost += matched * float(lot["unit_cost"])
+                matched_quantity += matched
+                holding_days_samples.append(max(0, (row.trade_date - lot["trade_date"]).days))
+                lot["quantity"] = float(lot["quantity"]) - matched
+                remaining -= matched
+                if float(lot["quantity"]) <= EPS:
+                    lots[key].pop(0)
+            open_quantities[key] = max(0.0, open_quantities[key] - matched_quantity)
+            if matched_quantity > EPS:
+                allocated_exit_cost = (fee + tax) * (matched_quantity / quantity)
+                matched_sell_results.append(matched_quantity * price - allocated_exit_cost - matched_cost)
+            if remaining > EPS:
+                unmatched_sell_count += 1
+
+        current_holding_days: List[float] = []
+        position_values: List[float] = []
+        for account in snapshot.get("accounts") or []:
+            for position in account.get("positions") or []:
+                local_value = max(0.0, float(position.get("market_value_base") or 0.0))
+                value, _, _ = self._convert_amount(
+                    amount=local_value,
+                    from_currency=str(account.get("base_currency") or snapshot.get("currency") or "CNY"),
+                    to_currency=str(snapshot.get("currency") or "CNY"),
+                    as_of_date=as_of_date,
+                )
+                if value > EPS:
+                    position_values.append(value)
+                days = position.get("holding_days")
+                if days is not None:
+                    current_holding_days.append(max(0.0, float(days)))
+
+        horizon_samples = holding_days_samples + current_holding_days
+        median_holding_days = statistics.median(horizon_samples) if horizon_samples else None
+        short_horizon_score = (
+            self._profile_score(
+                100.0 - 100.0 * math.log1p(median_holding_days) / math.log1p(120.0)
+            )
+            if median_holding_days is not None
+            else None
+        )
+
+        total_position_value = sum(position_values)
+        top_weight_pct = (
+            max(position_values) / total_position_value * 100.0
+            if total_position_value > EPS and position_values
+            else None
+        )
+        concentration_score = self._profile_score(top_weight_pct) if top_weight_pct is not None else None
+
+        scale_in_ratio = (scale_in_count / buy_count * 100.0) if buy_count >= 2 else None
+        profit_take_ratio = (
+            sum(1 for result in matched_sell_results if result > 0) / len(matched_sell_results) * 100.0
+            if len(matched_sell_results) >= 2
+            else None
+        )
+        size_cv: Optional[float] = None
+        sizing_consistency_score: Optional[int] = None
+        if len(trade_notionals) >= 3 and statistics.mean(trade_notionals) > EPS:
+            size_cv = statistics.pstdev(trade_notionals) / statistics.mean(trade_notionals)
+            sizing_consistency_score = self._profile_score(100.0 / (1.0 + size_cv))
+
+        confidence_score = self._profile_score(
+            sum(
+                [
+                    min(45.0, trade_count / 30.0 * 45.0),
+                    min(25.0, observation_days / 180.0 * 25.0),
+                    min(20.0, unique_symbols / 5.0 * 20.0),
+                    min(10.0, len(matched_sell_results) / 10.0 * 10.0),
+                ]
+            )
+        )
+        confidence = "high" if confidence_score >= 75 else "medium" if confidence_score >= 45 else "low"
+        status = "ready" if trade_count >= 8 and observation_days >= 14 else "forming"
+
+        dimensions = [
+            self._profile_dimension("activity", activity_score, {"trades_per_30d": trades_per_30d}),
+            self._profile_dimension("short_horizon", short_horizon_score, {"median_holding_days": median_holding_days}),
+            self._profile_dimension("concentration", concentration_score, {"top_weight_pct": top_weight_pct}),
+            self._profile_dimension(
+                "scale_in",
+                self._profile_score(scale_in_ratio) if scale_in_ratio is not None else None,
+                {"scale_in_ratio_pct": scale_in_ratio},
+            ),
+            self._profile_dimension(
+                "profit_taking",
+                self._profile_score(profit_take_ratio) if profit_take_ratio is not None else None,
+                {"profitable_sell_ratio_pct": profit_take_ratio},
+            ),
+            self._profile_dimension("sizing_consistency", sizing_consistency_score, {"trade_size_cv": size_cv}),
+        ]
+        available_dimensions = [item for item in dimensions if item["available"]]
+        archetype = self._resolve_profile_archetype(available_dimensions)
+
+        limitations: List[str] = []
+        if status == "forming":
+            limitations.append("insufficient_observation_window")
+        if unmatched_sell_count:
+            limitations.append("unmatched_sell_history")
+        if not position_values:
+            limitations.append("no_current_positions_for_concentration")
+
+        return {
+            "scope": "account" if account_id is not None else "all_accounts",
+            "account_id": account_id,
+            "as_of": as_of_date.isoformat(),
+            "status": status,
+            "confidence": confidence,
+            "confidence_score": confidence_score,
+            "archetype": archetype,
+            "sample": {
+                "trade_count": trade_count,
+                "buy_count": buy_count,
+                "sell_count": sell_count,
+                "unique_symbols": unique_symbols,
+                "observation_days": observation_days,
+                "first_trade_date": first_trade_date.isoformat() if first_trade_date else None,
+                "last_trade_date": last_trade_date.isoformat() if last_trade_date else None,
+            },
+            "dimensions": dimensions,
+            "limitations": limitations,
+            "methodology_version": "portfolio-style-v1",
+        }
+
+    @staticmethod
+    def _profile_score(value: Optional[float]) -> Optional[int]:
+        if value is None or not math.isfinite(float(value)):
+            return None
+        return int(round(max(0.0, min(100.0, float(value)))))
+
+    @staticmethod
+    def _profile_dimension(key: str, score: Optional[int], evidence: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "key": key,
+            "score": score,
+            "available": score is not None,
+            "evidence": {
+                name: round(float(value), 4) if isinstance(value, (int, float)) and value is not None else value
+                for name, value in evidence.items()
+            },
+        }
+
+    @staticmethod
+    def _resolve_profile_archetype(dimensions: List[Dict[str, Any]]) -> str:
+        scores = {item["key"]: int(item["score"]) for item in dimensions if item.get("score") is not None}
+        if len(scores) < 3:
+            return "forming"
+        if scores.get("activity", 0) >= 65 and scores.get("short_horizon", 0) >= 65:
+            return "active_short_term"
+        if scores.get("concentration", 0) >= 70 and scores.get("scale_in", 0) >= 55:
+            return "concentrated_builder"
+        if scores.get("short_horizon", 100) <= 35 and scores.get("activity", 100) <= 45:
+            return "patient_holder"
+        if scores.get("sizing_consistency", 0) >= 70:
+            return "systematic_balanced"
+        return "adaptive_balanced"
+
     def list_cash_ledger_events(
         self,
         *,
@@ -491,6 +751,9 @@ class PortfolioService:
             "total_cash": 0.0,
             "total_market_value": 0.0,
             "total_equity": 0.0,
+            "holding_pnl": 0.0,
+            "daily_pnl": 0.0,
+            "daily_pnl_complete": True,
             "realized_pnl": 0.0,
             "unrealized_pnl": 0.0,
             "fee_total": 0.0,
@@ -550,6 +813,24 @@ class PortfolioService:
                 to_currency=aggregate_currency,
                 as_of_date=as_of_date,
             )
+            holding_cny, stale_holding, _ = self._convert_amount(
+                amount=account_snapshot["holding_pnl"],
+                from_currency=account.base_currency,
+                to_currency=aggregate_currency,
+                as_of_date=as_of_date,
+            )
+            daily_pnl = account_snapshot["daily_pnl"]
+            if daily_pnl is None:
+                aggregate["daily_pnl_complete"] = False
+                daily_cny = 0.0
+                stale_daily = False
+            else:
+                daily_cny, stale_daily, _ = self._convert_amount(
+                    amount=daily_pnl,
+                    from_currency=account.base_currency,
+                    to_currency=aggregate_currency,
+                    as_of_date=as_of_date,
+                )
             realized_cny, stale_realized, _ = self._convert_amount(
                 amount=account_snapshot["realized_pnl"],
                 from_currency=account.base_currency,
@@ -578,6 +859,8 @@ class PortfolioService:
             aggregate["total_cash"] += cash_cny
             aggregate["total_market_value"] += mv_cny
             aggregate["total_equity"] += eq_cny
+            aggregate["holding_pnl"] += holding_cny
+            aggregate["daily_pnl"] += daily_cny
             aggregate["realized_pnl"] += realized_cny
             aggregate["unrealized_pnl"] += unrealized_cny
             aggregate["fee_total"] += fee_cny
@@ -587,6 +870,8 @@ class PortfolioService:
                     stale_cash,
                     stale_mv,
                     stale_eq,
+                    stale_holding,
+                    stale_daily,
                     stale_realized,
                     stale_unrealized,
                     stale_fee,
@@ -602,6 +887,12 @@ class PortfolioService:
             "total_cash": round(aggregate["total_cash"], 6),
             "total_market_value": round(aggregate["total_market_value"], 6),
             "total_equity": round(aggregate["total_equity"], 6),
+            "holding_pnl": round(aggregate["holding_pnl"], 6),
+            "daily_pnl": (
+                round(aggregate["daily_pnl"], 6)
+                if aggregate["daily_pnl_complete"]
+                else None
+            ),
             "realized_pnl": round(aggregate["realized_pnl"], 6),
             "unrealized_pnl": round(aggregate["unrealized_pnl"], 6),
             "fee_total": round(aggregate["fee_total"], 6),
@@ -735,8 +1026,7 @@ class PortfolioService:
         # Quantity validation only depends on position-changing events for one symbol.
         # Cash ledger entries do not affect shares held, so we keep the same corp->trade
         # ordering as full replay without pulling unrelated cash events into this path.
-        event_priority = {"corp": 1, "trade": 2}
-        events.sort(key=lambda item: (item[1], event_priority[item[0]], item[2]))
+        events.sort(key=self._replay_event_sort_key)
 
         quantity_held = 0.0
         for event_type, event_date, _, event in events:
@@ -774,6 +1064,94 @@ class PortfolioService:
 
         return quantity_held
 
+    def _build_holding_cycle_states(
+        self,
+        *,
+        trades: Iterable[Any],
+        corporate_actions: Iterable[Any],
+    ) -> Dict[Tuple[str, str, str], _HoldingCycleState]:
+        """Build broker-style diluted costs without resetting on an intraday round trip.
+
+        Trade rows only carry a trading date, not an execution timestamp.  We therefore
+        treat all trades for one symbol on one date as an end-of-day batch.  Buys are
+        replayed before sells, and a holding cycle ends only when the end-of-day
+        quantity is zero.  This keeps same-day sell-then-buy T trades in the existing
+        holding cycle while preserving the strict FIFO/AVG accounting fields.
+        """
+
+        events: List[Tuple[str, date, int, Any]] = []
+        for row in trades:
+            events.append(("trade", row.trade_date, row.id, row))
+        for row in corporate_actions:
+            if (row.action_type or "").strip().lower() == "split_adjustment":
+                events.append(("corp", row.effective_date, row.id, row))
+        events.sort(key=self._replay_event_sort_key)
+
+        states: Dict[Tuple[str, str, str], _HoldingCycleState] = defaultdict(_HoldingCycleState)
+        active_date: Optional[date] = None
+        touched_keys: Set[Tuple[str, str, str]] = set()
+
+        def finish_day() -> None:
+            for touched_key in touched_keys:
+                state = states[touched_key]
+                if state.quantity <= EPS:
+                    state.quantity = 0.0
+                    state.net_cost = 0.0
+                    state.start_date = None
+
+        for event_type, event_date, _, event in events:
+            if active_date is not None and event_date != active_date:
+                finish_day()
+                touched_keys = set()
+            active_date = event_date
+
+            key = (
+                self._normalize_symbol_for_position(event.symbol),
+                self._normalize_market(event.market),
+                self._normalize_currency(event.currency),
+            )
+            state = states[key]
+            touched_keys.add(key)
+
+            if event_type == "corp":
+                split_ratio = float(event.split_ratio or 0.0)
+                if split_ratio <= 0:
+                    raise ValueError(f"Invalid split_ratio for {key[0]}")
+                if abs(split_ratio - 1.0) > EPS:
+                    state.quantity *= split_ratio
+                continue
+
+            qty = float(event.quantity or 0.0)
+            price = float(event.price or 0.0)
+            fee = float(event.fee or 0.0)
+            tax = float(event.tax or 0.0)
+            if qty <= 0 or price <= 0:
+                raise ValueError(f"Invalid trade quantity or price for {event.symbol}")
+
+            gross = qty * price
+            side = (event.side or "").strip().lower()
+            if side == "buy":
+                if state.start_date is None:
+                    state.start_date = event_date
+                state.quantity += qty
+                state.net_cost += gross + fee + tax
+            elif side == "sell":
+                if state.quantity + EPS < qty:
+                    raise PortfolioOversellError(
+                        symbol=key[0],
+                        trade_date=event_date,
+                        requested_quantity=qty,
+                        available_quantity=state.quantity,
+                    )
+                state.quantity -= qty
+                state.net_cost -= gross - fee - tax
+            else:
+                raise ValueError(f"Unsupported trade side: {event.side}")
+
+        if active_date is not None:
+            finish_day()
+        return dict(states)
+
     def _replay_account(
         self,
         *,
@@ -794,9 +1172,10 @@ class PortfolioService:
         for row in corporate_actions:
             events.append(("corp", row.effective_date, row.id, row))
 
-        # Same-day deterministic ordering: cash -> corporate action -> trade.
-        event_priority = {"cash": 0, "corp": 1, "trade": 2}
-        events.sort(key=lambda item: (item[1], event_priority[item[0]], item[2]))
+        # Same-day deterministic ordering: cash -> corporate action -> buy -> sell.
+        # Trade rows contain dates but no reliable execution timestamps, so database
+        # insertion order must not decide whether a position is temporarily flat.
+        events.sort(key=self._replay_event_sort_key)
 
         cash_balances: Dict[str, float] = defaultdict(float)
         fees_total_base = 0.0
@@ -934,12 +1313,17 @@ class PortfolioService:
                 else:
                     raise ValueError(f"Unsupported corporate action type: {event.action_type}")
 
+        holding_cycle_states = self._build_holding_cycle_states(
+            trades=trades,
+            corporate_actions=corporate_actions,
+        )
         position_rows, lot_rows, market_value_base, total_cost_base, stale_pos = self._build_positions(
             account=account,
             as_of_date=as_of_date,
             cost_method=cost_method,
             fifo_lots=fifo_lots,
             avg_state=avg_state,
+            holding_cycle_states=holding_cycle_states,
             include_realtime=include_realtime,
         )
         fx_stale = fx_stale or stale_pos
@@ -957,6 +1341,28 @@ class PortfolioService:
 
         unrealized_pnl_base = market_value_base - total_cost_base
         total_equity_base = total_cash_base + market_value_base
+        metric_fx_stale = self._enrich_position_dashboard_metrics(
+            account=account,
+            as_of_date=as_of_date,
+            trades=trades,
+            corporate_actions=corporate_actions,
+            positions=position_rows,
+            total_equity_base=total_equity_base,
+        )
+        fx_stale = fx_stale or metric_fx_stale
+        holding_pnl_base = sum(
+            float(position.get("holding_pnl_base") or 0.0)
+            for position in position_rows
+        )
+        daily_pnl_values = [
+            position.get("daily_pnl_base")
+            for position in position_rows
+        ]
+        daily_pnl_base = (
+            sum(float(value or 0.0) for value in daily_pnl_values)
+            if all(value is not None for value in daily_pnl_values)
+            else None
+        )
         position_limitations = [
             limitation
             for position in position_rows
@@ -979,6 +1385,12 @@ class PortfolioService:
             "total_cash": round(total_cash_base, 6),
             "total_market_value": round(market_value_base, 6),
             "total_equity": round(total_equity_base, 6),
+            "holding_pnl": round(holding_pnl_base, 6),
+            "daily_pnl": (
+                round(daily_pnl_base, 6)
+                if daily_pnl_base is not None
+                else None
+            ),
             "realized_pnl": round(realized_pnl_base, 6),
             "unrealized_pnl": round(unrealized_pnl_base, 6),
             "fee_total": round(fees_total_base, 6),
@@ -997,6 +1409,12 @@ class PortfolioService:
             "total_cash": float(total_cash_base),
             "total_market_value": float(market_value_base),
             "total_equity": float(total_equity_base),
+            "holding_pnl": float(holding_pnl_base),
+            "daily_pnl": (
+                float(daily_pnl_base)
+                if daily_pnl_base is not None
+                else None
+            ),
             "realized_pnl": float(realized_pnl_base),
             "unrealized_pnl": float(unrealized_pnl_base),
             "fee_total": float(fees_total_base),
@@ -1012,6 +1430,7 @@ class PortfolioService:
         cost_method: str,
         fifo_lots: Dict[Tuple[str, str, str], List[Dict[str, Any]]],
         avg_state: Dict[Tuple[str, str, str], _AvgState],
+        holding_cycle_states: Optional[Dict[Tuple[str, str, str], _HoldingCycleState]] = None,
         include_realtime: bool = True,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], float, float, bool]:
         position_rows: List[Dict[str, Any]] = []
@@ -1076,6 +1495,15 @@ class PortfolioService:
                     }
                 )
 
+            holding_state = (holding_cycle_states or {}).get(key)
+            if holding_state is not None and abs(float(holding_state.quantity) - qty) <= EPS:
+                holding_total_cost = float(holding_state.net_cost)
+                holding_cycle_start_date = holding_state.start_date
+            else:
+                holding_total_cost = total_cost
+                holding_cycle_start_date = None
+            holding_avg_cost = holding_total_cost / qty
+
             price_info = self._resolve_position_price(
                 symbol=symbol,
                 as_of_date=as_of_date,
@@ -1099,16 +1527,28 @@ class PortfolioService:
                     to_currency=account.base_currency,
                     as_of_date=as_of_date,
                 )
+                holding_cost_base, stale_holding_cost, _ = self._convert_amount(
+                    amount=holding_total_cost,
+                    from_currency=currency,
+                    to_currency=account.base_currency,
+                    as_of_date=as_of_date,
+                )
                 unrealized_base = market_base - cost_base
-                fx_stale = fx_stale or stale_market or stale_cost
+                holding_pnl_base = market_base - holding_cost_base
+                fx_stale = fx_stale or stale_market or stale_cost or stale_holding_cost
             else:
                 market_base = 0.0
                 cost_base = 0.0
+                holding_cost_base = 0.0
                 unrealized_base = 0.0
+                holding_pnl_base = 0.0
 
             unrealized_pct = None
             if abs(cost_base) > EPS:
                 unrealized_pct = unrealized_base / cost_base * 100.0
+            holding_pnl_pct = None
+            if holding_cost_base > EPS:
+                holding_pnl_pct = holding_pnl_base / holding_cost_base * 100.0
 
             position_rows.append(
                 {
@@ -1122,6 +1562,15 @@ class PortfolioService:
                     "market_value_base": round(market_base, 8),
                     "unrealized_pnl_base": round(unrealized_base, 8),
                     "unrealized_pnl_pct": round(unrealized_pct, 8) if unrealized_pct is not None else None,
+                    "holding_avg_cost": round(holding_avg_cost, 8),
+                    "holding_total_cost": round(holding_total_cost, 8),
+                    "holding_pnl_base": round(holding_pnl_base, 8),
+                    "holding_pnl_pct": round(holding_pnl_pct, 8) if holding_pnl_pct is not None else None,
+                    "holding_cycle_start_date": (
+                        holding_cycle_start_date.isoformat()
+                        if holding_cycle_start_date is not None
+                        else None
+                    ),
                     "valuation_currency": account.base_currency,
                     "price_source": price_info.source,
                     "price_provider": price_info.provider,
@@ -1137,6 +1586,172 @@ class PortfolioService:
             total_cost_base += cost_base
 
         return position_rows, lot_rows, market_value_base, total_cost_base, fx_stale
+
+    def _enrich_position_dashboard_metrics(
+        self,
+        *,
+        account: Any,
+        as_of_date: date,
+        trades: Iterable[Any],
+        corporate_actions: Iterable[Any],
+        positions: List[Dict[str, Any]],
+        total_equity_base: float,
+    ) -> bool:
+        """Add broker-style position fields used by the account dashboard."""
+
+        today_trade_stats: Dict[Tuple[str, str, str], Dict[str, float]] = defaultdict(
+            lambda: {
+                "buy_quantity": 0.0,
+                "sell_quantity": 0.0,
+                "buy_cash": 0.0,
+                "sell_cash": 0.0,
+            }
+        )
+        for trade in trades:
+            if trade.trade_date != as_of_date:
+                continue
+            key = (
+                self._normalize_symbol_for_position(trade.symbol),
+                self._normalize_market(trade.market),
+                self._normalize_currency(trade.currency),
+            )
+            stats = today_trade_stats[key]
+            quantity = float(trade.quantity or 0.0)
+            gross = quantity * float(trade.price or 0.0)
+            fee = float(trade.fee or 0.0)
+            tax = float(trade.tax or 0.0)
+            side = str(trade.side or "").strip().lower()
+            if side == "buy":
+                stats["buy_quantity"] += quantity
+                stats["buy_cash"] += gross + fee + tax
+            elif side == "sell":
+                stats["sell_quantity"] += quantity
+                stats["sell_cash"] += gross - fee - tax
+
+        today_dividends: Dict[Tuple[str, str, str], float] = defaultdict(float)
+        split_keys: Set[Tuple[str, str, str]] = set()
+        for action in corporate_actions:
+            if action.effective_date != as_of_date:
+                continue
+            key = (
+                self._normalize_symbol_for_position(action.symbol),
+                self._normalize_market(action.market),
+                self._normalize_currency(action.currency),
+            )
+            action_type = str(action.action_type or "").strip().lower()
+            if action_type == "cash_dividend":
+                today_dividends[key] += float(action.cash_dividend_per_share or 0.0)
+            elif action_type == "split_adjustment":
+                split_keys.add(key)
+
+        metric_fx_stale = False
+        for position in positions:
+            key = (
+                str(position.get("symbol") or ""),
+                str(position.get("market") or ""),
+                str(position.get("currency") or ""),
+            )
+            quantity = float(position.get("quantity") or 0.0)
+            stats = today_trade_stats.get(key, {})
+            bought_today = float(stats.get("buy_quantity") or 0.0)
+            sold_today = float(stats.get("sell_quantity") or 0.0)
+
+            if key[1] == "cn":
+                available_quantity = max(0.0, quantity - bought_today)
+            else:
+                available_quantity = quantity
+            position["available_quantity"] = round(min(quantity, available_quantity), 8)
+
+            holding_start_raw = position.get("holding_cycle_start_date")
+            holding_start = date.fromisoformat(holding_start_raw) if holding_start_raw else None
+            position["holding_days"] = (
+                count_market_sessions(key[1], holding_start, as_of_date)
+                if holding_start is not None
+                else None
+            )
+
+            last_price = float(position.get("last_price") or 0.0)
+            holding_avg_cost = float(position.get("holding_avg_cost") or 0.0)
+            position["break_even_pct"] = (
+                round(max(0.0, (holding_avg_cost / last_price - 1.0) * 100.0), 8)
+                if last_price > EPS and holding_avg_cost > EPS
+                else None
+            )
+            position["position_weight_pct"] = (
+                round(float(position.get("market_value_base") or 0.0) / total_equity_base * 100.0, 8)
+                if total_equity_base > EPS
+                else None
+            )
+            position["stock_name"] = self._resolve_local_stock_name(key[0])
+
+            position["daily_pnl_base"] = None
+            position["daily_pnl_pct"] = None
+            if (
+                key in split_keys
+                or not bool(position.get("price_available"))
+                or position.get("price_date") != as_of_date.isoformat()
+            ):
+                continue
+
+            previous_close = self.repo.get_latest_close_with_date(
+                symbol=key[0],
+                as_of=as_of_date - timedelta(days=1),
+            )
+            if previous_close is None:
+                continue
+            previous_close_price, _ = previous_close
+            opening_quantity = max(0.0, quantity - bought_today + sold_today)
+            opening_market_value = opening_quantity * float(previous_close_price)
+            closing_market_value = quantity * last_price
+            dividend_cash = opening_quantity * today_dividends.get(key, 0.0)
+            buy_cash = float(stats.get("buy_cash") or 0.0)
+            sell_cash = float(stats.get("sell_cash") or 0.0)
+            daily_pnl_local = (
+                closing_market_value
+                - opening_market_value
+                + sell_cash
+                - buy_cash
+                + dividend_cash
+            )
+            daily_pnl_base, stale_daily, _ = self._convert_amount(
+                amount=daily_pnl_local,
+                from_currency=key[2],
+                to_currency=account.base_currency,
+                as_of_date=as_of_date,
+            )
+            metric_fx_stale = metric_fx_stale or stale_daily
+            net_new_position_cash = max(0.0, buy_cash - sell_cash)
+            daily_denominator = opening_market_value + net_new_position_cash
+            if daily_denominator <= EPS:
+                daily_denominator = buy_cash
+            position["daily_pnl_base"] = round(daily_pnl_base, 8)
+            position["daily_pnl_pct"] = (
+                round(daily_pnl_local / daily_denominator * 100.0, 8)
+                if daily_denominator > EPS
+                else None
+            )
+
+        return metric_fx_stale
+
+    @staticmethod
+    def _resolve_local_stock_name(symbol: str) -> Optional[str]:
+        """Resolve a name without triggering online stock-name providers."""
+
+        normalized = normalize_stock_code(symbol)
+        name = STOCK_NAME_MAP.get(normalized) or get_index_stock_name(normalized)
+        return str(name).strip() if is_meaningful_stock_name(name, normalized) else None
+
+    @staticmethod
+    def _replay_event_sort_key(item: Tuple[str, date, int, Any]) -> Tuple[date, int, int, int]:
+        """Return stable end-of-day replay order independent of insertion order."""
+
+        event_type, event_date, event_id, event = item
+        event_priority = {"cash": 0, "corp": 1, "trade": 2}
+        side_priority = 0
+        if event_type == "trade":
+            side = (getattr(event, "side", "") or "").strip().lower()
+            side_priority = {"buy": 0, "sell": 1}.get(side, 2)
+        return event_date, event_priority[event_type], side_priority, event_id
 
     def _resolve_position_price(
         self,

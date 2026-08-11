@@ -485,6 +485,197 @@ class PortfolioServiceTestCase(unittest.TestCase):
         self.assertAlmostEqual(fifo_acc["positions"][0]["quantity"], 50.0, places=6)
         self.assertAlmostEqual(avg_acc["positions"][0]["quantity"], 50.0, places=6)
 
+    def test_same_day_sell_then_buy_keeps_diluted_holding_cycle_pnl(self) -> None:
+        account = self.service.create_account(name="T account", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        trades = [
+            (date(2026, 7, 24), "buy", 200, 7.82),
+            (date(2026, 7, 24), "buy", 200, 7.62),
+            (date(2026, 7, 28), "sell", 200, 8.61),
+            # The sell is intentionally inserted before the same-day buy.
+            (date(2026, 7, 29), "sell", 200, 9.10),
+            (date(2026, 7, 29), "buy", 200, 8.67),
+        ]
+        for trade_date, side, quantity, price in trades:
+            self.service.record_trade(
+                account_id=aid,
+                symbol="600693",
+                trade_date=trade_date,
+                side=side,
+                quantity=quantity,
+                price=price,
+                market="cn",
+                currency="CNY",
+            )
+        self._save_close("600693", date(2026, 7, 29), 8.61)
+
+        for cost_method in ("fifo", "avg"):
+            with self.subTest(cost_method=cost_method):
+                snapshot = self.service.get_portfolio_snapshot(
+                    account_id=aid,
+                    as_of=date(2026, 7, 29),
+                    cost_method=cost_method,
+                    include_realtime=False,
+                )
+                position = snapshot["accounts"][0]["positions"][0]
+                self.assertAlmostEqual(position["quantity"], 200.0, places=6)
+                self.assertAlmostEqual(position["holding_total_cost"], 1280.0, places=6)
+                self.assertAlmostEqual(position["holding_avg_cost"], 6.40, places=6)
+                self.assertAlmostEqual(position["holding_pnl_base"], 442.0, places=6)
+                self.assertAlmostEqual(position["holding_pnl_pct"], 34.53125, places=6)
+                self.assertEqual(position["holding_cycle_start_date"], "2026-07-24")
+
+        fifo_position = self.service.get_portfolio_snapshot(
+            account_id=aid,
+            as_of=date(2026, 7, 29),
+            cost_method="fifo",
+            include_realtime=False,
+        )["accounts"][0]["positions"][0]
+        self.assertAlmostEqual(fifo_position["unrealized_pnl_base"], -12.0, places=6)
+
+    def test_diluted_holding_cycle_resets_after_end_of_day_flat_position(self) -> None:
+        account = self.service.create_account(name="Cycle reset", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        for trade_date, side, price in [
+            (date(2026, 7, 24), "buy", 10.0),
+            (date(2026, 7, 25), "sell", 12.0),
+            (date(2026, 7, 28), "buy", 11.0),
+        ]:
+            self.service.record_trade(
+                account_id=aid,
+                symbol="600519",
+                trade_date=trade_date,
+                side=side,
+                quantity=100,
+                price=price,
+                market="cn",
+                currency="CNY",
+            )
+        self._save_close("600519", date(2026, 7, 29), 10.0)
+
+        position = self.service.get_portfolio_snapshot(
+            account_id=aid,
+            as_of=date(2026, 7, 29),
+            cost_method="fifo",
+            include_realtime=False,
+        )["accounts"][0]["positions"][0]
+        self.assertAlmostEqual(position["holding_total_cost"], 1100.0, places=6)
+        self.assertAlmostEqual(position["holding_avg_cost"], 11.0, places=6)
+        self.assertAlmostEqual(position["holding_pnl_base"], -100.0, places=6)
+        self.assertEqual(position["holding_cycle_start_date"], "2026-07-28")
+
+    def test_position_dashboard_metrics_follow_broker_intraday_pnl_semantics(self) -> None:
+        account = self.service.create_account(name="Dashboard", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 7, 24),
+            direction="in",
+            amount=6000,
+            currency="CNY",
+        )
+        for trade_date, side, quantity, price in [
+            (date(2026, 7, 24), "buy", 200, 7.82),
+            (date(2026, 7, 24), "buy", 200, 7.62),
+            (date(2026, 7, 28), "sell", 200, 8.61),
+            (date(2026, 7, 29), "sell", 200, 9.10),
+            (date(2026, 7, 29), "buy", 200, 8.67),
+        ]:
+            self.service.record_trade(
+                account_id=aid,
+                symbol="600693",
+                trade_date=trade_date,
+                side=side,
+                quantity=quantity,
+                price=price,
+                market="cn",
+                currency="CNY",
+            )
+        self._save_close("600693", date(2026, 7, 28), 8.61)
+        self._save_close("600693", date(2026, 7, 29), 9.47)
+
+        snapshot = self.service.get_portfolio_snapshot(
+            account_id=aid,
+            as_of=date(2026, 7, 29),
+            cost_method="fifo",
+            include_realtime=False,
+        )
+        account_snapshot = snapshot["accounts"][0]
+        position = account_snapshot["positions"][0]
+
+        self.assertAlmostEqual(position["available_quantity"], 0.0, places=6)
+        self.assertAlmostEqual(position["daily_pnl_base"], 258.0, places=6)
+        self.assertAlmostEqual(position["daily_pnl_pct"], 258.0 / 1722.0 * 100.0, places=6)
+        self.assertEqual(position["holding_days"], 4)
+        self.assertAlmostEqual(position["break_even_pct"], 0.0, places=6)
+        self.assertAlmostEqual(position["position_weight_pct"], 1894.0 / 6614.0 * 100.0, places=6)
+        self.assertAlmostEqual(account_snapshot["holding_pnl"], 614.0, places=6)
+        self.assertAlmostEqual(account_snapshot["daily_pnl"], 258.0, places=6)
+        self.assertAlmostEqual(snapshot["holding_pnl"], 614.0, places=6)
+        self.assertAlmostEqual(snapshot["daily_pnl"], 258.0, places=6)
+
+    def test_daily_pnl_pct_adds_net_new_position_cash_to_denominator(self) -> None:
+        account = self.service.create_account(name="Cashflow adjusted", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        for trade_date, quantity, price, fee in [
+            (date(2026, 7, 24), 100, 11.63, 5.01),
+            (date(2026, 7, 28), 100, 11.48, 5.01),
+            (date(2026, 7, 30), 200, 11.33, 5.01),
+        ]:
+            self.service.record_trade(
+                account_id=aid,
+                symbol="605299",
+                trade_date=trade_date,
+                side="buy",
+                quantity=quantity,
+                price=price,
+                fee=fee,
+                market="cn",
+                currency="CNY",
+            )
+        self._save_close("605299", date(2026, 7, 29), 11.57)
+        self._save_close("605299", date(2026, 7, 30), 11.00)
+
+        position = self.service.get_portfolio_snapshot(
+            account_id=aid,
+            as_of=date(2026, 7, 30),
+            cost_method="fifo",
+            include_realtime=False,
+        )["accounts"][0]["positions"][0]
+
+        opening_market_value = 200 * 11.57
+        today_buy_cash = 200 * 11.33 + 5.01
+        expected_daily_pnl = 400 * 11.00 - opening_market_value - today_buy_cash
+        expected_daily_pct = expected_daily_pnl / (opening_market_value + today_buy_cash) * 100.0
+        self.assertAlmostEqual(position["daily_pnl_base"], -185.01, places=6)
+        self.assertAlmostEqual(position["daily_pnl_pct"], expected_daily_pct, places=6)
+        self.assertAlmostEqual(position["daily_pnl_pct"], -4.035105703, places=6)
+
+    def test_position_dashboard_available_quantity_uses_cn_t_plus_one_rule(self) -> None:
+        account = self.service.create_account(name="Available", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_trade(
+            account_id=aid,
+            symbol="600519",
+            trade_date=date(2026, 7, 28),
+            side="buy",
+            quantity=100,
+            price=10,
+            market="cn",
+            currency="CNY",
+        )
+        self._save_close("600519", date(2026, 7, 29), 10.5)
+
+        position = self.service.get_portfolio_snapshot(
+            account_id=aid,
+            as_of=date(2026, 7, 29),
+            include_realtime=False,
+        )["accounts"][0]["positions"][0]
+
+        self.assertEqual(position["stock_name"], "贵州茅台")
+        self.assertAlmostEqual(position["available_quantity"], 100.0, places=6)
+        self.assertAlmostEqual(position["break_even_pct"], 0.0, places=6)
+
     def test_snapshot_position_price_metadata_uses_backend_values_for_cn_hk_us(self) -> None:
         for market, currency, symbol, close, expected_symbol in [
             ("cn", "CNY", "600519", 12.5, "600519"),

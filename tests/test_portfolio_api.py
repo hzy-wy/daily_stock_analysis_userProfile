@@ -178,6 +178,12 @@ class PortfolioApiTestCase(unittest.TestCase):
         self.assertAlmostEqual(account_snapshot["total_cash"], 0.0, places=6)
         self.assertAlmostEqual(account_snapshot["total_market_value"], 11000.0, places=6)
         self.assertAlmostEqual(account_snapshot["total_equity"], 11000.0, places=6)
+        position = account_snapshot["positions"][0]
+        self.assertAlmostEqual(position["holding_avg_cost"], 100.0, places=6)
+        self.assertAlmostEqual(position["holding_total_cost"], 10000.0, places=6)
+        self.assertAlmostEqual(position["holding_pnl_base"], 1000.0, places=6)
+        self.assertAlmostEqual(position["holding_pnl_pct"], 10.0, places=6)
+        self.assertEqual(position["holding_cycle_start_date"], "2026-01-02")
 
     def test_snapshot_include_realtime_false_skips_realtime_quote(self) -> None:
         today = date.today()
@@ -953,6 +959,83 @@ class PortfolioApiTestCase(unittest.TestCase):
         self.assertIn("huatai", brokers)
         self.assertIn("citic", brokers)
         self.assertIn("cmb", brokers)
+
+    def test_image_import_parse_and_reviewed_commit_contract(self) -> None:
+        source_hash = "a" * 64
+        parsed_payload = {
+            "source_hash": source_hash,
+            "record_count": 1,
+            "records": [
+                {
+                    "trade_date": date(2026, 7, 29),
+                    "symbol": "600693",
+                    "stock_name": "东百集团",
+                    "side": "buy",
+                    "quantity": 200,
+                    "price": 8.67,
+                    "fee": 0,
+                    "tax": 0,
+                    "currency": "CNY",
+                    "confidence": "high",
+                    "warning": "费用未显示，请核对",
+                    "source_index": 0,
+                }
+            ],
+            "warnings": ["请核对费用"],
+        }
+        with patch(
+            "api.v1.endpoints.portfolio.PortfolioImageImportService.parse_image",
+            return_value=parsed_payload,
+        ) as parse_mock:
+            parse_resp = self.client.post(
+                "/api/v1/portfolio/imports/image/parse",
+                files={"file": ("trade.png", b"image-bytes", "image/png")},
+            )
+
+        self.assertEqual(parse_resp.status_code, 200, parse_resp.text)
+        self.assertEqual(parse_resp.json()["records"][0]["stock_name"], "东百集团")
+        self.assertEqual(parse_mock.call_args.kwargs["mime_type"], "image/png")
+
+        commit_result = {
+            "account_id": 1,
+            "record_count": 1,
+            "inserted_count": 1,
+            "duplicate_count": 0,
+            "failed_count": 0,
+            "dry_run": False,
+            "errors": [],
+        }
+        with patch(
+            "api.v1.endpoints.portfolio.PortfolioImageImportService.commit_records",
+            return_value=commit_result,
+        ) as commit_mock:
+            commit_resp = self.client.post(
+                "/api/v1/portfolio/imports/image/commit",
+                json={
+                    "account_id": 1,
+                    "source_hash": source_hash,
+                    "records": [
+                        {
+                            "trade_date": "2026-07-29",
+                            "symbol": "600693",
+                            "stock_name": "东百集团",
+                            "side": "buy",
+                            "quantity": 200,
+                            "price": 8.67,
+                            "fee": 0,
+                            "tax": 0,
+                            "currency": "CNY",
+                            "confidence": "high",
+                            "source_index": 0,
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(commit_resp.status_code, 200, commit_resp.text)
+        self.assertEqual(commit_resp.json()["inserted_count"], 1)
+        self.assertEqual(commit_mock.call_args.kwargs["account_id"], 1)
+        self.assertEqual(commit_mock.call_args.kwargs["records"][0]["symbol"], "600693")
 
     def test_event_list_invalid_page_size_returns_422(self) -> None:
         resp = self.client.get("/api/v1/portfolio/trades", params={"page_size": 101})

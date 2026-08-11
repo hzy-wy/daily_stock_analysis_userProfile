@@ -13,12 +13,15 @@ import type {
   PortfolioDeleteResponse,
   PortfolioEventCreatedResponse,
   PortfolioFxRefreshResponse,
+  PortfolioImageImportCommitRequest,
+  PortfolioImageImportParseResponse,
   PortfolioImportBrokerListResponse,
   PortfolioImportCommitResponse,
   PortfolioImportParseResponse,
   PortfolioPositionAnalysisRequest,
   PortfolioRiskResponse,
   PortfolioSnapshotResponse,
+  PortfolioTraderProfileResponse,
   PortfolioTradeCreateRequest,
   PortfolioTradeListResponse,
 } from '../types/portfolio';
@@ -283,6 +286,45 @@ export const portfolioApi = {
     formData.append('file', file);
     const response = await apiClient.post<Record<string, unknown>>('/api/v1/portfolio/imports/csv/commit', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return toCamelCase<PortfolioImportCommitResponse>(response.data);
+  },
+
+  async getTraderProfile(query: SnapshotQuery = {}): Promise<PortfolioTraderProfileResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/portfolio/trader-profile', {
+      params: buildSnapshotParams({ ...query, includeRealtime: undefined }),
+    });
+    return toCamelCase<PortfolioTraderProfileResponse>(response.data);
+  },
+
+  async parseImageImport(file: File): Promise<PortfolioImageImportParseResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await apiClient.post<Record<string, unknown>>('/api/v1/portfolio/imports/image/parse', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return toCamelCase<PortfolioImageImportParseResponse>(response.data);
+  },
+
+  async commitImageImport(payload: PortfolioImageImportCommitRequest): Promise<PortfolioImportCommitResponse> {
+    const response = await apiClient.post<Record<string, unknown>>('/api/v1/portfolio/imports/image/commit', {
+      account_id: payload.accountId,
+      source_hash: payload.sourceHash,
+      dry_run: payload.dryRun ?? false,
+      records: payload.records.map((record) => ({
+        trade_date: record.tradeDate,
+        symbol: record.symbol,
+        stock_name: record.stockName,
+        side: record.side,
+        quantity: record.quantity,
+        price: record.price,
+        fee: record.fee,
+        tax: record.tax,
+        currency: record.currency,
+        confidence: record.confidence,
+        warning: record.warning,
+        source_index: record.sourceIndex,
+      })),
     });
     return toCamelCase<PortfolioImportCommitResponse>(response.data);
   },

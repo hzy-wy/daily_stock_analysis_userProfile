@@ -1035,6 +1035,12 @@ class Config:
     # 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、both(全部市场)
     market_review_region: str = "cn"
     market_review_color_scheme: str = "green_up"
+    # 首页市场看板采用分块并发抓取；总预算只约束当前 HTTP 请求，不会取消后台单块刷新。
+    market_dashboard_fetch_budget_seconds: float = 8.0
+    # 最近成功数据在该时限内直接复用，过期后会触发后台刷新。
+    market_dashboard_cache_ttl_seconds: int = 60
+    # 外部数据源异常时允许回退的最长时间；前端会明确标记为陈旧数据。
+    market_dashboard_stale_ttl_seconds: int = 604800
     # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
     trading_day_check_enabled: bool = True
 
@@ -1995,6 +2001,24 @@ class Config:
             ),
             market_review_color_scheme=cls._parse_market_review_color_scheme(
                 os.getenv('MARKET_REVIEW_COLOR_SCHEME', 'green_up')
+            ),
+            market_dashboard_fetch_budget_seconds=parse_env_float(
+                os.getenv('MARKET_DASHBOARD_FETCH_BUDGET_SECONDS'),
+                8.0,
+                field_name='MARKET_DASHBOARD_FETCH_BUDGET_SECONDS',
+                minimum=0.5,
+            ),
+            market_dashboard_cache_ttl_seconds=parse_env_int(
+                os.getenv('MARKET_DASHBOARD_CACHE_TTL_SECONDS'),
+                60,
+                field_name='MARKET_DASHBOARD_CACHE_TTL_SECONDS',
+                minimum=0,
+            ),
+            market_dashboard_stale_ttl_seconds=parse_env_int(
+                os.getenv('MARKET_DASHBOARD_STALE_TTL_SECONDS'),
+                604800,
+                field_name='MARKET_DASHBOARD_STALE_TTL_SECONDS',
+                minimum=0,
             ),
             trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',

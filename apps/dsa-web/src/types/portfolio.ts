@@ -31,15 +31,27 @@ export interface PortfolioAccountCreateRequest {
 
 export interface PortfolioPositionItem {
   symbol: string;
+  stockName?: string | null;
   market: string;
   currency: string;
   quantity: number;
+  availableQuantity?: number | null;
   avgCost: number;
   totalCost: number;
   lastPrice: number;
   marketValueBase: number;
   unrealizedPnlBase: number;
   unrealizedPnlPct?: number | null;
+  holdingAvgCost?: number | null;
+  holdingTotalCost?: number | null;
+  holdingPnlBase?: number | null;
+  holdingPnlPct?: number | null;
+  holdingCycleStartDate?: string | null;
+  holdingDays?: number | null;
+  dailyPnlBase?: number | null;
+  dailyPnlPct?: number | null;
+  positionWeightPct?: number | null;
+  breakEvenPct?: number | null;
   valuationCurrency: string;
   priceSource?: 'realtime_quote' | 'history_close' | 'missing' | string;
   priceProvider?: string | null;
@@ -68,6 +80,8 @@ export interface PortfolioAccountSnapshot {
   totalCash: number;
   totalMarketValue: number;
   totalEquity: number;
+  holdingPnl?: number;
+  dailyPnl?: number | null;
   realizedPnl: number;
   unrealizedPnl: number;
   feeTotal: number;
@@ -86,6 +100,8 @@ export interface PortfolioSnapshotResponse {
   totalCash: number;
   totalMarketValue: number;
   totalEquity: number;
+  holdingPnl?: number;
+  dailyPnl?: number | null;
   realizedPnl: number;
   unrealizedPnl: number;
   feeTotal: number;
@@ -94,6 +110,43 @@ export interface PortfolioSnapshotResponse {
   dataQuality?: 'ok' | 'partial' | string;
   limitations?: string[];
   accounts: PortfolioAccountSnapshot[];
+}
+
+export type PortfolioTraderProfileDimensionKey =
+  | 'activity'
+  | 'short_horizon'
+  | 'concentration'
+  | 'scale_in'
+  | 'profit_taking'
+  | 'sizing_consistency';
+
+export interface PortfolioTraderProfileDimension {
+  key: PortfolioTraderProfileDimensionKey;
+  score?: number | null;
+  available: boolean;
+  evidence: Record<string, number | string | null>;
+}
+
+export interface PortfolioTraderProfileResponse {
+  scope: 'account' | 'all_accounts';
+  accountId?: number | null;
+  asOf: string;
+  status: 'forming' | 'ready';
+  confidence: 'low' | 'medium' | 'high';
+  confidenceScore: number;
+  archetype: string;
+  sample: {
+    tradeCount: number;
+    buyCount: number;
+    sellCount: number;
+    uniqueSymbols: number;
+    observationDays: number;
+    firstTradeDate?: string | null;
+    lastTradeDate?: string | null;
+  };
+  dimensions: PortfolioTraderProfileDimension[];
+  limitations: string[];
+  methodologyVersion: string;
 }
 
 export interface PortfolioConcentrationItem {
@@ -315,6 +368,35 @@ export interface PortfolioImportCommitResponse {
   failedCount: number;
   dryRun: boolean;
   errors: string[];
+}
+
+export interface PortfolioImageImportTradeItem {
+  tradeDate: string;
+  symbol: string;
+  stockName?: string | null;
+  side: PortfolioSide;
+  quantity: number;
+  price: number;
+  fee: number;
+  tax: number;
+  currency?: string | null;
+  confidence: 'high' | 'medium' | 'low';
+  warning?: string | null;
+  sourceIndex: number;
+}
+
+export interface PortfolioImageImportParseResponse {
+  sourceHash: string;
+  recordCount: number;
+  records: PortfolioImageImportTradeItem[];
+  warnings: string[];
+}
+
+export interface PortfolioImageImportCommitRequest {
+  accountId: number;
+  sourceHash: string;
+  dryRun?: boolean;
+  records: PortfolioImageImportTradeItem[];
 }
 
 export interface PortfolioImportBrokerItem {

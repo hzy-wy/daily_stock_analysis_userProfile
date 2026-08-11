@@ -23,6 +23,7 @@ from api.v1.schemas.stocks import (
     ExtractFromImageResponse,
     ExtractItem,
     KLineData,
+    MarketDashboardResponse,
     StockHistoryResponse,
     StockQuote,
 )
@@ -40,6 +41,7 @@ from src.services.import_parser import (
 )
 from src.services.stock_service import StockService
 from src.services.stock_list_parser import split_stock_list
+from src.services.market_light_service import build_market_dashboard, normalize_market_region
 from src.services.system_config_service import SystemConfigService
 from data_provider.base import normalize_stock_code
 
@@ -311,6 +313,31 @@ async def parse_import(request: Request) -> ExtractFromImageResponse:
     ]
     codes = list(dict.fromkeys(i.code for i in extract_items if i.code))
     return ExtractFromImageResponse(codes=codes, items=extract_items, raw_text=None)
+
+
+@router.get(
+    "/market-dashboard",
+    response_model=MarketDashboardResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Get the structured homepage market dashboard",
+)
+def get_market_dashboard(
+    region: str = Query("cn", description="Market region: cn, hk, us, jp or kr"),
+) -> MarketDashboardResponse:
+    try:
+        normalized_region = normalize_market_region(region)
+        return MarketDashboardResponse(**build_market_dashboard(normalized_region))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "validation_error", "message": str(exc)},
+        )
+    except Exception as exc:
+        logger.error("Get market dashboard failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"Get market dashboard failed: {str(exc)}"},
+        )
 
 
 @router.get(
