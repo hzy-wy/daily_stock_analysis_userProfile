@@ -2967,7 +2967,7 @@ textarea {
 .app-shell__ambient {
   position: fixed;
   inset: 0;
-  z-index: 0;
+  z-index: -1;
   overflow: hidden;
   pointer-events: none;
 }
@@ -3018,7 +3018,508 @@ textarea {
 
 .app-shell__frame {
   position: relative;
+  z-index: auto;
+}
+
+.app-shell__content {
+  position: relative;
   z-index: 1;
+  margin-top: 0.75rem;
+}
+
+.app-commandbar {
+  position: sticky;
+  top: 0.65rem;
+  z-index: 65;
+  width: 100%;
+  animation: commandbar-enter 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.app-commandbar__surface {
+  position: relative;
+  display: flex;
+  min-height: 4.35rem;
+  align-items: center;
+  gap: 1rem;
+  overflow: visible;
+  border: 1px solid transparent;
+  border-radius: 1.45rem;
+  padding: 0.55rem 0.65rem;
+  background:
+    linear-gradient(135deg, hsl(var(--card) / 0.94), hsl(var(--background) / 0.82)) padding-box,
+    linear-gradient(115deg, hsl(var(--primary) / 0.46), hsl(var(--foreground) / 0.08) 38%, hsl(252 88% 67% / 0.22) 72%, hsl(var(--primary) / 0.2)) border-box;
+  box-shadow:
+    inset 0 1px 0 hsl(var(--foreground) / 0.08),
+    0 20px 60px hsl(226 60% 4% / 0.24),
+    0 0 0 1px hsl(var(--primary) / 0.025);
+  backdrop-filter: blur(28px) saturate(1.18);
+  -webkit-backdrop-filter: blur(28px) saturate(1.18);
+}
+
+.app-commandbar__surface::after {
+  content: "";
+  position: absolute;
+  right: 12%;
+  bottom: -1px;
+  left: 12%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, hsl(var(--primary) / 0.82), hsl(252 88% 67% / 0.46), transparent);
+  filter: drop-shadow(0 0 8px hsl(var(--primary) / 0.68));
+  transform: scaleX(0.72);
+  animation: commandbar-signal 4.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.app-commandbar__brand {
+  display: flex;
+  min-width: 10.5rem;
+  align-items: center;
+  gap: 0.72rem;
+  border-radius: 1rem;
+  padding: 0.2rem 0.35rem;
+  color: hsl(var(--foreground));
+  text-decoration: none;
+}
+
+.app-commandbar__brand-mark {
+  position: relative;
+  display: grid;
+  width: 2.65rem;
+  height: 2.65rem;
+  flex: none;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid hsl(var(--primary) / 0.5);
+  border-radius: 0.9rem;
+  background:
+    radial-gradient(circle at 28% 18%, hsl(0 0% 100% / 0.55), transparent 18%),
+    linear-gradient(145deg, hsl(var(--primary)), hsl(208 100% 56%) 58%, hsl(252 86% 62%));
+  color: hsl(226 54% 8%);
+  box-shadow: 0 10px 28px hsl(var(--primary) / 0.28);
+}
+
+.app-commandbar__brand-pulse {
+  position: absolute;
+  right: 0.28rem;
+  bottom: 0.28rem;
+  width: 0.38rem;
+  height: 0.38rem;
+  border: 1px solid hsl(226 54% 8% / 0.55);
+  border-radius: 999px;
+  background: hsl(148 76% 48%);
+  box-shadow: 0 0 10px hsl(148 76% 48% / 0.9);
+}
+
+.app-commandbar__brand-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  line-height: 1.05;
+}
+
+.app-commandbar__brand-copy strong {
+  font-size: 0.98rem;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+}
+
+.app-commandbar__brand-copy small {
+  margin-top: 0.3rem;
+  color: hsl(var(--muted-foreground));
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.app-commandbar__nav {
+  display: none;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+}
+
+.command-nav-link {
+  position: relative;
+  display: inline-flex;
+  height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.48rem;
+  border: 1px solid transparent;
+  border-radius: 0.9rem;
+  padding: 0 0.85rem;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.79rem;
+  font-weight: 560;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 180ms ease, background-color 180ms ease, border-color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+}
+
+.command-nav-link::after {
+  content: "";
+  position: absolute;
+  right: 0.72rem;
+  bottom: 0.25rem;
+  left: 0.72rem;
+  height: 2px;
+  border-radius: 999px;
+  background: hsl(var(--primary));
+  box-shadow: 0 0 12px hsl(var(--primary) / 0.78);
+  opacity: 0;
+  transform: scaleX(0.25);
+  transition: opacity 180ms ease, transform 220ms ease;
+}
+
+.command-nav-link:hover,
+.command-nav-link[data-state="open"] {
+  transform: translateY(-1px);
+  border-color: hsl(var(--primary) / 0.16);
+  background: hsl(var(--foreground) / 0.035);
+  color: hsl(var(--foreground));
+}
+
+.command-nav-link--active {
+  border-color: hsl(var(--primary) / 0.23);
+  background: linear-gradient(145deg, hsl(var(--primary) / 0.12), hsl(var(--foreground) / 0.025));
+  color: hsl(var(--primary));
+  box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.045), 0 8px 24px hsl(var(--primary) / 0.07);
+}
+
+.command-nav-link--active::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+.app-commandbar__more {
+  position: relative;
+}
+
+.command-menu {
+  position: absolute;
+  top: calc(100% + 0.75rem);
+  right: 0;
+  z-index: 100;
+  width: 14rem;
+  overflow: hidden;
+  border: 1px solid hsl(var(--primary) / 0.18);
+  border-radius: 1.15rem;
+  padding: 0.5rem;
+  background:
+    linear-gradient(155deg, hsl(var(--primary) / 0.055), transparent 34%),
+    hsl(var(--card) / 0.97);
+  box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.06), 0 26px 70px hsl(226 62% 4% / 0.38);
+  animation: command-menu-enter 190ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  backdrop-filter: blur(26px) saturate(1.15);
+  -webkit-backdrop-filter: blur(26px) saturate(1.15);
+}
+
+.command-menu__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 0.42rem;
+  padding: 0.45rem 0.65rem 0.55rem;
+  color: hsl(var(--primary));
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.61rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.command-menu-link {
+  display: flex;
+  width: 100%;
+  min-height: 2.85rem;
+  align-items: center;
+  gap: 0.7rem;
+  border: 1px solid transparent;
+  border-radius: 0.82rem;
+  padding: 0.6rem 0.7rem;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.8rem;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.command-menu-link:hover,
+.command-menu-link--active {
+  transform: translateX(2px);
+  border-color: hsl(var(--primary) / 0.14);
+  background: hsl(var(--primary) / 0.08);
+  color: hsl(var(--foreground));
+}
+
+.command-menu-link--active {
+  color: hsl(var(--primary));
+}
+
+.command-menu-link--danger:hover {
+  border-color: hsl(352 84% 60% / 0.22);
+  background: hsl(352 84% 60% / 0.08);
+  color: hsl(352 84% 66%);
+}
+
+.app-commandbar__utilities {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.app-commandbar__status {
+  display: none;
+  align-items: center;
+  gap: 0.42rem;
+  margin-right: 0.2rem;
+  border: 1px solid hsl(148 76% 48% / 0.18);
+  border-radius: 999px;
+  padding: 0.42rem 0.65rem;
+  color: hsl(var(--muted-foreground));
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+}
+
+.app-commandbar__status > span {
+  width: 0.38rem;
+  height: 0.38rem;
+  border-radius: 999px;
+  background: hsl(148 76% 48%);
+  box-shadow: 0 0 10px hsl(148 76% 48% / 0.86);
+  animation: command-status-pulse 2.4s ease-in-out infinite;
+}
+
+.app-commandbar__utility {
+  position: relative;
+}
+
+.app-commandbar__utility-button,
+.app-commandbar__mobile-menu-button {
+  display: inline-grid;
+  width: 2.55rem;
+  height: 2.55rem;
+  place-items: center;
+  border: 1px solid hsl(var(--foreground) / 0.1);
+  border-radius: 0.82rem;
+  padding: 0;
+  background: hsl(var(--foreground) / 0.025);
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, background-color 180ms ease, color 180ms ease;
+}
+
+.app-commandbar__utility-button:hover,
+.app-commandbar__utility-button[data-state="open"],
+.app-commandbar__mobile-menu-button:hover {
+  transform: translateY(-1px);
+  border-color: hsl(var(--primary) / 0.25);
+  background: hsl(var(--primary) / 0.08);
+  color: hsl(var(--primary));
+}
+
+.app-commandbar__utility-button > span {
+  display: none !important;
+}
+
+.app-commandbar__mobile-menu-button {
+  display: inline-grid;
+}
+
+.app-mobile-dock {
+  position: fixed;
+  right: 0.5rem;
+  bottom: max(0.55rem, env(safe-area-inset-bottom));
+  left: 0.5rem;
+  z-index: 70;
+  display: flex;
+  max-width: 38rem;
+  min-height: 4.35rem;
+  align-items: center;
+  justify-content: space-around;
+  gap: 0.2rem;
+  margin: 0 auto;
+  border: 1px solid transparent;
+  border-radius: 1.35rem;
+  padding: 0.42rem;
+  background:
+    linear-gradient(150deg, hsl(var(--card) / 0.96), hsl(var(--background) / 0.9)) padding-box,
+    linear-gradient(110deg, hsl(var(--primary) / 0.4), hsl(var(--foreground) / 0.08), hsl(252 88% 67% / 0.24)) border-box;
+  box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.07), 0 20px 56px hsl(226 62% 4% / 0.38);
+  backdrop-filter: blur(28px) saturate(1.16);
+  -webkit-backdrop-filter: blur(28px) saturate(1.16);
+}
+
+.mobile-dock-link {
+  position: relative;
+  display: flex;
+  min-width: 3.7rem;
+  min-height: 3.35rem;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.28rem;
+  border: 1px solid transparent;
+  border-radius: 1rem;
+  padding: 0.35rem 0.25rem;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.63rem;
+  cursor: pointer;
+  transition: border-color 180ms ease, background-color 180ms ease, color 180ms ease, transform 180ms ease;
+}
+
+.mobile-dock-link:hover,
+.mobile-dock-link--active {
+  transform: translateY(-1px);
+  border-color: hsl(var(--primary) / 0.2);
+  background: hsl(var(--primary) / 0.09);
+  color: hsl(var(--primary));
+}
+
+.mobile-dock-link--active::before {
+  content: "";
+  position: absolute;
+  top: 0.25rem;
+  width: 1.2rem;
+  height: 2px;
+  border-radius: 999px;
+  background: hsl(var(--primary));
+  box-shadow: 0 0 10px hsl(var(--primary) / 0.8);
+}
+
+.command-drawer {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+}
+
+.command-drawer__identity {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-bottom: 1.2rem;
+  border: 1px solid hsl(var(--primary) / 0.14);
+  border-radius: 1.15rem;
+  padding: 0.8rem;
+  background: hsl(var(--primary) / 0.045);
+}
+
+.command-drawer__identity strong {
+  font-size: 0.9rem;
+  letter-spacing: 0.08em;
+}
+
+.command-drawer__identity p {
+  margin-top: 0.22rem;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.7rem;
+}
+
+.command-drawer__links {
+  display: grid;
+  gap: 0.28rem;
+}
+
+@keyframes commandbar-enter {
+  from { opacity: 0; transform: translateY(-14px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes commandbar-signal {
+  0%, 100% { opacity: 0.42; transform: scaleX(0.72); }
+  50% { opacity: 1; transform: scaleX(1); }
+}
+
+@keyframes command-menu-enter {
+  from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes command-status-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.12); }
+}
+
+@media (min-width: 1280px) {
+  .app-commandbar__nav {
+    display: flex;
+  }
+
+  .app-commandbar__mobile-menu-button,
+  .app-mobile-dock {
+    display: none;
+  }
+}
+
+@media (min-width: 1536px) {
+  .app-commandbar__status {
+    display: flex;
+  }
+}
+
+@media (max-width: 1279px) {
+  .app-commandbar__brand-copy small {
+    display: none;
+  }
+
+  .app-commandbar__brand {
+    min-width: 0;
+    margin-right: auto;
+  }
+
+  .stock-assistant-launcher {
+    bottom: 6.25rem;
+  }
+}
+
+@media (max-width: 639px) {
+  .app-commandbar {
+    top: 0.35rem;
+  }
+
+  .app-commandbar__surface {
+    min-height: 3.75rem;
+    border-radius: 1.15rem;
+    padding: 0.4rem 0.45rem;
+  }
+
+  .app-commandbar__brand-mark {
+    width: 2.35rem;
+    height: 2.35rem;
+    border-radius: 0.78rem;
+  }
+
+  .app-commandbar__brand-copy strong {
+    font-size: 0.86rem;
+  }
+
+  .app-commandbar__utility-button,
+  .app-commandbar__mobile-menu-button {
+    width: 2.3rem;
+    height: 2.3rem;
+    border-radius: 0.72rem;
+  }
+
+  .app-mobile-dock {
+    min-height: 4rem;
+    border-radius: 1.15rem;
+    padding: 0.32rem;
+  }
+
+  .mobile-dock-link {
+    min-width: 0;
+    min-height: 3.2rem;
+    font-size: 0.59rem;
+  }
 }
 
 .app-sidebar {
@@ -3449,6 +3950,12 @@ textarea {
 
   .chat-workspace--assistant > div:last-child > header p {
     display: none;
+  }
+}
+
+@media (max-width: 1279px) {
+  .stock-assistant-launcher {
+    bottom: calc(5.35rem + env(safe-area-inset-bottom));
   }
 }
 

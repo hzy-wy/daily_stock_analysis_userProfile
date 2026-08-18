@@ -2,9 +2,17 @@
 
 ## Design goals
 
-The Web UI uses one fintech presentation layer across light and dark themes: semantic colors, fine panel borders, ambient light, a subtle grid, and restrained motion. The shell can use up to 1920px on wide displays, while business pages can use up to 1600px, reducing dead space without changing responsive behavior.
+The Web UI uses one fintech presentation layer across light and dark themes: semantic colors, fine panel borders, ambient light, a subtle grid, and restrained motion. The shell can use up to 1920px on wide displays, while business pages can use up to 1760px, reducing dead space without changing responsive behavior.
 
 Motion communicates hierarchy and state only: page entry, active navigation, button feedback, ambient lighting, and assistant transitions. Non-essential animations are disabled automatically when the operating system requests reduced motion.
+
+## Global navigation and responsive layout
+
+- Desktop no longer uses a fixed left sidebar. A floating top command bar keeps Home, Screening, Portfolio, AI signals, and Backtest as primary destinations; Alerts, Usage, Settings, and logout live in the compact More menu.
+- Screening remains conditional on the real AlphaSift enabled state and still refreshes after system configuration events. The redesign does not alter feature-flag semantics.
+- Theme and interface language are compact top-right utilities rather than business navigation items. The theme menu still supports light, dark, and system modes.
+- Viewports below 1280px use a floating bottom dock for frequent destinations and a top-right menu for the complete route set. The dock reserves safe spacing for the Ask launcher.
+- The command bar, dock, menus, and expanded canvas all reuse the original routes, so changing layout does not reset business-page state or introduce parallel implementations.
 
 ## Global Ask assistant
 
@@ -21,7 +29,7 @@ This presentation-layer update does not change the Agent API, analysis pipeline,
 Primary implementation points:
 
 - `apps/dsa-web/src/components/assistant/FloatingStockAssistant.tsx`
+- `apps/dsa-web/src/components/layout/CommandNavigation.tsx`
 - `apps/dsa-web/src/components/layout/Shell.tsx`
 - `apps/dsa-web/src/pages/ChatPage.tsx`
 - `apps/dsa-web/src/index.css`
-
