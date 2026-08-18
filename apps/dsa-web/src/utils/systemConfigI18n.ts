@@ -244,7 +244,7 @@ const fieldDescriptionMap: Record<string, string> = {
   GENERATION_BACKEND: '用于个股分析、大盘复盘和普通文本生成。本地 CLI 生成方式需要本机已安装并登录对应 CLI，仍可能调用对应云服务，不是离线模型。',
   GENERATION_FALLBACK_BACKEND: '本地 CLI 生成失败后的处理方式：禁用表示直接报错，默认模型配置表示再尝试普通模型。',
   OPENCODE_CLI_MODEL: 'OpenCode CLI 的可选模型覆盖；留空时使用本机 OpenCode 默认模型。认证和模型可用性由本机 OpenCode 配置负责。',
-  GENERATION_BACKEND_TIMEOUT_SECONDS: '单次生成最多等待多少秒，默认 300；主要用于本地 CLI 这类命令行方式。',
+  GENERATION_BACKEND_TIMEOUT_SECONDS: '单次完整生成的总等待预算，默认 300 秒；普通模型生成的流式请求、回退模型与完整性重试共享该预算，本地 CLI 也使用此上限。',
   GENERATION_BACKEND_MAX_OUTPUT_BYTES: '单次本地命令行生成可读取的输出大小上限，默认 1048576 字节。',
   GENERATION_BACKEND_MAX_CONCURRENCY: '同时允许多少个模型生成任务运行，默认 1；使用默认模型配置时不改变分析任务线程数。',
   LOCAL_CLI_BACKEND_MAX_CONCURRENCY: '同时允许启动多少个本地命令行生成进程，默认 1；最终不会超过“模型生成最大并发”。',

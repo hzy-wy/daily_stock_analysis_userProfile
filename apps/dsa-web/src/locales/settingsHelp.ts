@@ -78,9 +78,9 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.ai_model.GENERATION_BACKEND_TIMEOUT_SECONDS': {
     title: '生成超时（秒）',
-    summary: '限制一次模型生成最多等待多久。',
-    usage: '默认 300 秒，主要用于本地 CLI 这类命令行生成方式。',
-    valueNotes: ['超时后会停止本次生成，并在日志里记录明确的超时错误。'],
+    summary: '限制一次完整模型生成最多等待多久。',
+    usage: '默认 300 秒。普通模型生成的流式请求、非流式回退、备用模型与完整性重试共享该预算；本地 CLI 也使用此上限。',
+    valueNotes: ['预算耗尽后会结束本次生成并记录明确的超时错误，避免定时分析被单个请求长期阻塞。'],
   },
   'settings.ai_model.GENERATION_BACKEND_MAX_OUTPUT_BYTES': {
     title: '最大输出大小（字节）',
@@ -1287,9 +1287,9 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.ai_model.GENERATION_BACKEND_TIMEOUT_SECONDS': {
     title: 'Generation Timeout (Seconds)',
-    summary: 'Limits how long one model generation may wait.',
-    usage: 'Default is 300 seconds. This mainly applies to local CLI generation.',
-    valueNotes: ['Timeout stops the generation and records a clear timeout error.'],
+    summary: 'Limits the total wall-clock time for one model generation.',
+    usage: 'Default is 300 seconds. Streaming, non-stream fallback, fallback models, and integrity retries share this budget; local CLI backends also use it.',
+    valueNotes: ['Exhausting the budget ends the generation and records a clear timeout instead of blocking scheduled analysis indefinitely.'],
   },
   'settings.ai_model.GENERATION_BACKEND_MAX_OUTPUT_BYTES': {
     title: 'Maximum Output Size (Bytes)',

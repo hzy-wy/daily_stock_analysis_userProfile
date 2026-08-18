@@ -199,7 +199,12 @@ const restoreActiveStockContextFromMessages = (messages: Message[]): ActiveStock
   return restoredContext;
 };
 
-const ChatPage: React.FC = () => {
+type ChatPageProps = {
+  variant?: 'page' | 'assistant';
+};
+
+const ChatPage: React.FC<ChatPageProps> = ({ variant = 'page' }) => {
+  const isAssistant = variant === 'assistant';
   const { t } = useUiLanguage();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -631,6 +636,10 @@ const ChatPage: React.FC = () => {
 
   // Handle follow-up from report page: ?stock=600519&name=贵州茅台&recordId=xxx
   useEffect(() => {
+    if (isAssistant) {
+      return;
+    }
+
     const stock = sanitizeFollowUpStockCode(searchParams.get('stock'));
     const name = sanitizeFollowUpStockName(searchParams.get('name'));
     const recordId = parseFollowUpRecordId(searchParams.get('recordId'));
@@ -669,7 +678,7 @@ const ChatPage: React.FC = () => {
       }
     });
     setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams]);
+  }, [isAssistant, searchParams, setSearchParams]);
 
   const handleSend = useCallback(
     async (
@@ -1027,17 +1036,25 @@ const ChatPage: React.FC = () => {
   return (
     <div
       data-testid="chat-workspace"
-      className="flex h-[calc(100vh-5rem)] w-full min-w-0 gap-4 overflow-hidden sm:h-[calc(100vh-5.5rem)] lg:h-[calc(100vh-2rem)]"
+      className={cn(
+        'chat-workspace flex w-full min-w-0 overflow-hidden',
+        isAssistant
+          ? 'chat-workspace--assistant h-full gap-0'
+          : 'h-[calc(100vh-5rem)] gap-4 sm:h-[calc(100vh-5.5rem)] lg:h-[calc(100vh-2rem)]',
+      )}
     >
       {/* Desktop sidebar */}
-      <div className="hidden h-full w-64 flex-shrink-0 flex-col overflow-hidden rounded-[1.25rem] border border-white/8 bg-card/82 shadow-soft-card md:flex">
+      <div className={cn(
+        'h-full w-64 flex-shrink-0 flex-col overflow-hidden rounded-[1.25rem] border border-white/8 bg-card/82 shadow-soft-card',
+        isAssistant ? 'hidden' : 'hidden md:flex',
+      )}>
         {sidebarContent}
       </div>
 
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-40 md:hidden"
+          className={cn('fixed inset-0 z-40', isAssistant ? '' : 'md:hidden')}
           onClick={() => setSidebarOpen(false)}
         >
           <div className="page-drawer-overlay absolute inset-0" />
@@ -1069,7 +1086,10 @@ const ChatPage: React.FC = () => {
             <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
               <button
                 onClick={() => setSidebarOpen(true)}
-                className="md:hidden p-1.5 -ml-1 rounded-lg hover:bg-hover transition-colors text-secondary-text hover:text-foreground"
+                className={cn(
+                  'p-1.5 -ml-1 rounded-lg hover:bg-hover transition-colors text-secondary-text hover:text-foreground',
+                  isAssistant ? '' : 'md:hidden',
+                )}
                 aria-label="历史对话"
               >
                 <svg

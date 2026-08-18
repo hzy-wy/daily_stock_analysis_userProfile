@@ -793,6 +793,8 @@ python main.py --schedule --no-run-immediately
 > 从 `python main.py --schedule` 或等价纯 CLI 调度模式启动后，WebUI 保存新的 `SCHEDULE_TIME` / `SCHEDULE_TIMES` 会在下一轮调度检查内自动重绑 daily jobs，无需重启进程；旧的执行时间不会继续保留。`python main.py --serve --schedule` 会由 Web/API runtime scheduler 接管定时任务，WebUI/API/Desktop 长运行进程保存 `SCHEDULE_ENABLED`、`SCHEDULE_TIME` 或 `SCHEDULE_TIMES` 后会按当前配置启停或重建 runtime scheduler。
 >
 > Web/API runtime scheduler 的立即执行入口只会在没有分析任务运行时接受请求；如果已有分析在执行，会返回忙碌状态而不是假装排队成功。
+>
+> Web/API runtime scheduler 会把实际分析移到独立工作线程，调度轮询本身不会被某一只股票的网络或模型请求阻塞。重复触发时仍使用全局分析锁拒绝重叠运行；LiteLLM 的最长等待由 `GENERATION_BACKEND_TIMEOUT_SECONDS` 的总预算控制。
 
 #### 环境变量方式
 

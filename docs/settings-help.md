@@ -98,3 +98,4 @@ Issue #1512 收口后，Web 设置页只展示后端配置注册表中的正式�
 - `SCHEDULE_TIME`、`SCHEDULE_TIMES`：不是重启必需项。`SCHEDULE_TIMES` 为空时使用 `SCHEDULE_TIME`；已运行的 scheduler 会按新时间重建 daily jobs。
 - `SCHEDULE_RUN_IMMEDIATELY`：schedule 模式启动行为，保存后不会让当前进程立即执行一次分析；手动执行请使用 runtime scheduler 的 run-now API。
 - runtime scheduler 的 run-now API 只会在没有分析任务运行时接受请求；如果已有分析在执行，会返回忙碌状态，Web 设置页会提示稍后重试。
+- runtime scheduler 的定时回调只负责启动独立分析线程，不再同步占用调度轮询线程；单个 LiteLLM 请求的流式、非流式回退、备用模型和完整性重试共享 `GENERATION_BACKEND_TIMEOUT_SECONDS` 总预算。

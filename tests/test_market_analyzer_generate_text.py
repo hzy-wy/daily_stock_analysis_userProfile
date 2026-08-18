@@ -11,6 +11,8 @@ Covers:
 """
 import json
 import sys
+import threading
+import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -126,6 +128,7 @@ class TestAnalyzerGenerateText:
             cfg.openai_base_url = None
             cfg.generation_backend = "litellm"
             cfg.generation_fallback_backend = "litellm"
+            cfg.generation_backend_timeout_seconds = 300
             mock_cfg.return_value = cfg
             from src.analyzer import GeminiAnalyzer
             analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
@@ -187,10 +190,13 @@ class TestAnalyzerGenerateText:
         with patch.object(analyzer, "_call_litellm", return_value="市场分析报告") as mock_call:
             result = analyzer.generate_text("写一份复盘", max_tokens=1024, temperature=0.5)
             assert result == "市场分析报告"
-            mock_call.assert_called_once_with(
-                "写一份复盘",
-                generation_config={"max_tokens": 1024, "temperature": 0.5},
-            )
+            mock_call.assert_called_once()
+            assert mock_call.call_args.args == ("写一份复盘",)
+            generation_config = mock_call.call_args.kwargs["generation_config"]
+            assert generation_config["max_tokens"] == 1024
+            assert generation_config["temperature"] == 0.5
+            assert generation_config["timeout"] == 300
+            assert generation_config["_deadline_monotonic"] > time.monotonic()
 
     def test_generate_text_does_not_persist_unavailable_usage(self):
         analyzer = self._make_analyzer()
@@ -443,6 +449,44 @@ class TestAnalyzerGenerateText:
             gen_cfg = kwargs["generation_config"]
             assert gen_cfg["max_tokens"] == 2048
             assert gen_cfg["temperature"] == 0.7
+            assert gen_cfg["timeout"] == 300
+            assert gen_cfg["_deadline_monotonic"] > time.monotonic()
+
+    def test_litellm_hard_timeout_bounds_provider_that_ignores_timeout(self):
+        from src.analyzer import _AllModelsFailedError
+
+        analyzer = self._make_analyzer()
+        analyzer._config_override.generation_backend_timeout_seconds = 0.05
+        release = threading.Event()
+        observed_timeouts = []
+
+        def blocked_dispatch(model, call_kwargs, **kwargs):
+            observed_timeouts.append(call_kwargs.get("timeout"))
+            release.wait(timeout=1)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="late"))],
+                usage=None,
+            )
+
+        started_at = time.monotonic()
+        try:
+            with patch.object(
+                analyzer,
+                "_dispatch_litellm_completion",
+                side_effect=blocked_dispatch,
+            ):
+                with pytest.raises(_AllModelsFailedError, match="hard timeout"):
+                    analyzer._call_litellm_impl(
+                        "prompt",
+                        {"max_tokens": 32, "timeout": 0.05},
+                        stream=False,
+                    )
+        finally:
+            release.set()
+
+        assert time.monotonic() - started_at < 0.5
+        assert observed_timeouts
+        assert 0 < observed_timeouts[0] <= 0.051
 
     def test_call_litellm_wrapper_uses_generation_backend_tuple_contract(self):
         from src.llm.generation_backend import GenerationBackend

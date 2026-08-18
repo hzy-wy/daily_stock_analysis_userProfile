@@ -10,10 +10,13 @@ A股自选股智能分析系统 - AI分析层
 3. 解析 LLM 响应为结构化 AnalysisResult
 """
 
+import contextvars
 import json
 import logging
 import math
+import queue
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable
@@ -105,6 +108,62 @@ from src.market_phase_prompt import format_market_phase_prompt_section
 from src.market_structure_prompt import format_market_structure_prompt_section
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_LITELLM_TIMEOUT_SECONDS = 300.0
+
+
+def _coerce_positive_timeout(
+    value: Any,
+    *,
+    default: float = DEFAULT_LITELLM_TIMEOUT_SECONDS,
+) -> float:
+    """Return a finite positive timeout without allowing an unbounded request."""
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        timeout = default
+    if not math.isfinite(timeout) or timeout <= 0:
+        timeout = default
+    return timeout
+
+
+def _run_with_hard_timeout(
+    callback: Callable[[], Any],
+    timeout_seconds: float,
+    *,
+    label: str,
+) -> Any:
+    """Run a provider call behind a wall-clock deadline.
+
+    LiteLLM/provider transports normally honor their ``timeout`` argument, but
+    a blocked stream iterator or a provider retry can outlive that timeout.
+    The daemon worker keeps the scheduler and analysis pool recoverable even
+    when a third-party transport never returns.
+    """
+    timeout = _coerce_positive_timeout(timeout_seconds)
+    result_queue: queue.Queue[Tuple[bool, Any]] = queue.Queue(maxsize=1)
+    context = contextvars.copy_context()
+
+    def worker() -> None:
+        try:
+            result_queue.put((True, context.run(callback)))
+        except BaseException as exc:  # noqa: BLE001 - re-raised in caller thread.
+            result_queue.put((False, exc))
+
+    thread = threading.Thread(
+        target=worker,
+        daemon=True,
+        name="litellm-hard-timeout",
+    )
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise TimeoutError(f"{label} exceeded hard timeout of {timeout:.2f}s")
+
+    succeeded, value = result_queue.get_nowait()
+    if succeeded:
+        return value
+    raise value
 
 
 def _localized_text(language: Any, *, en: str, zh: str, ko: str) -> str:
@@ -3100,7 +3159,9 @@ class GeminiAnalyzer:
 
         Args:
             prompt: User prompt text.
-            generation_config: Dict with optional keys: temperature, max_output_tokens, max_tokens.
+            generation_config: Dict with optional keys: temperature, max_output_tokens,
+                max_tokens, and timeout. The timeout is a total wall-clock budget shared by
+                streaming, non-stream fallback, configured models, and integrity retries.
             response_validator: Optional callable that accepts the raw response text and raises
                 an exception if the response is unacceptable (e.g. not valid JSON).  When it
                 raises, the current model is treated as failed and the next fallback model is
@@ -3118,7 +3179,27 @@ class GeminiAnalyzer:
             or 8192
         )
         requested_temperature = generation_config.get('temperature', 0.7)
-        requested_timeout = generation_config.get("timeout")
+        requested_timeout = _coerce_positive_timeout(
+            generation_config.get(
+                "timeout",
+                getattr(config, "generation_backend_timeout_seconds", None),
+            )
+        )
+        deadline_value = generation_config.get("_deadline_monotonic")
+        try:
+            deadline = float(deadline_value)
+        except (TypeError, ValueError):
+            deadline = time.monotonic() + requested_timeout
+        if not math.isfinite(deadline):
+            deadline = time.monotonic() + requested_timeout
+
+        def _remaining_timeout() -> float:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"LiteLLM total timeout budget exhausted after {requested_timeout:.2f}s"
+                )
+            return remaining
 
         models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
         models_to_try = [m for m in models_to_try if m]
@@ -3174,8 +3255,7 @@ class GeminiAnalyzer:
                     ],
                     "max_tokens": max_tokens,
                 }
-                if requested_timeout not in (None, ""):
-                    call_kwargs["timeout"] = requested_timeout
+                call_kwargs["timeout"] = _remaining_timeout()
                 if extra:
                     call_kwargs["extra_body"] = extra
                 uses_router = (
@@ -3208,8 +3288,7 @@ class GeminiAnalyzer:
                 )
                 hint_result = apply_prompt_cache_hints(call_kwargs, route_context, config)
                 call_kwargs = hint_result.call_kwargs
-                if requested_timeout not in (None, ""):
-                    call_kwargs["timeout"] = requested_timeout
+                call_kwargs["timeout"] = _remaining_timeout()
                 if hint_result.diagnostics:
                     logger.debug("[PromptCache] %s", hint_result.diagnostics)
 
@@ -3218,26 +3297,44 @@ class GeminiAnalyzer:
 
                 if model_stream:
                     try:
-                        stream_response = call_litellm_with_param_recovery(
-                            lambda kwargs: self._dispatch_litellm_completion(
-                                model,
-                                kwargs,
-                                config=config,
-                                use_channel_router=use_channel_router,
-                                router_model_names=router_model_names,
-                            ),
-                            model=model,
-                            call_kwargs={**call_kwargs, "stream": True},
-                            model_list=recovery_model_list,
-                            cache_recovery=False,
-                            logger=logger,
+                        remaining = _remaining_timeout()
+                        stream_budget = min(
+                            remaining,
+                            max(0.1, requested_timeout / 2.0),
                         )
-                        _stream_text, _stream_usage = self._consume_litellm_stream(
-                            stream_response,
-                            model=model,
-                            usage_model=usage_model,
-                            provider=usage_provider,
-                            progress_callback=stream_progress_callback,
+
+                        def _stream_request() -> Tuple[str, Dict[str, Any]]:
+                            stream_kwargs = {
+                                **call_kwargs,
+                                "stream": True,
+                                "timeout": stream_budget,
+                            }
+                            stream_response = call_litellm_with_param_recovery(
+                                lambda kwargs: self._dispatch_litellm_completion(
+                                    model,
+                                    kwargs,
+                                    config=config,
+                                    use_channel_router=use_channel_router,
+                                    router_model_names=router_model_names,
+                                ),
+                                model=model,
+                                call_kwargs=stream_kwargs,
+                                model_list=recovery_model_list,
+                                cache_recovery=False,
+                                logger=logger,
+                            )
+                            return self._consume_litellm_stream(
+                                stream_response,
+                                model=model,
+                                usage_model=usage_model,
+                                provider=usage_provider,
+                                progress_callback=stream_progress_callback,
+                            )
+
+                        _stream_text, _stream_usage = _run_with_hard_timeout(
+                            _stream_request,
+                            stream_budget,
+                            label=f"LiteLLM stream request for {model}",
                         )
                     except _LiteLLMStreamError as exc:
                         safe_error = self._sanitize_litellm_exception_text(exc, config=config, model=model)
@@ -3271,18 +3368,24 @@ class GeminiAnalyzer:
                         response_validator(_stream_text)
                     return _stream_text, model, _stream_usage
 
-                response = call_litellm_with_param_recovery(
-                    lambda kwargs: self._dispatch_litellm_completion(
-                        model,
-                        kwargs,
-                        config=config,
-                        use_channel_router=use_channel_router,
-                        router_model_names=router_model_names,
+                remaining = _remaining_timeout()
+                non_stream_kwargs = {**call_kwargs, "timeout": remaining}
+                response = _run_with_hard_timeout(
+                    lambda: call_litellm_with_param_recovery(
+                        lambda kwargs: self._dispatch_litellm_completion(
+                            model,
+                            kwargs,
+                            config=config,
+                            use_channel_router=use_channel_router,
+                            router_model_names=router_model_names,
+                        ),
+                        model=model,
+                        call_kwargs=non_stream_kwargs,
+                        model_list=recovery_model_list,
+                        logger=logger,
                     ),
-                    model=model,
-                    call_kwargs=call_kwargs,
-                    model_list=recovery_model_list,
-                    logger=logger,
+                    remaining,
+                    label=f"LiteLLM non-stream request for {model}",
                 )
 
                 content = self._extract_completion_text(response)
@@ -3338,9 +3441,18 @@ class GeminiAnalyzer:
             Response text, or None if the LLM call fails (error is logged).
         """
         try:
+            config = self._get_runtime_config()
+            timeout_seconds = _coerce_positive_timeout(
+                getattr(config, "generation_backend_timeout_seconds", None)
+            )
             result = self._call_litellm(
                 prompt,
-                generation_config={"max_tokens": max_tokens, "temperature": temperature},
+                generation_config={
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "timeout": timeout_seconds,
+                    "_deadline_monotonic": time.monotonic() + timeout_seconds,
+                },
             )
             if isinstance(result, tuple):
                 text, model_used, usage = result
@@ -3542,9 +3654,14 @@ class GeminiAnalyzer:
                 logger.debug(f"=== 完整 Prompt ({len(prompt)}字符) ===\n{prompt}\n=== End Prompt ===")
 
             # 设置生成配置
+            timeout_seconds = _coerce_positive_timeout(
+                getattr(config, "generation_backend_timeout_seconds", None)
+            )
             generation_config = {
                 "temperature": config.llm_temperature,
                 "max_output_tokens": 8192,
+                "timeout": timeout_seconds,
+                "_deadline_monotonic": time.monotonic() + timeout_seconds,
             }
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")

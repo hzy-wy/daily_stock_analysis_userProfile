@@ -1943,6 +1943,20 @@ describe('ChatPage', () => {
     });
   });
 
+  it('keeps host-page query params untouched in assistant mode', async () => {
+    const router = createMemoryRouter(
+      [{ path: '/portfolio', element: <ChatPage variant="assistant" /> }],
+      { initialEntries: ['/portfolio?category=agent&stock=600519'] },
+    );
+
+    render(<RouterProvider router={router} />);
+
+    expect(await screen.findByTestId('chat-workspace')).toHaveClass('chat-workspace--assistant');
+    expect(router.state.location.search).toBe('?category=agent&stock=600519');
+    expect(screen.getByPlaceholderText(/分析 600519/)).toHaveValue('');
+    expect(historyApi.getDetail).not.toHaveBeenCalled();
+  });
+
   it('ignores malformed follow-up query params', async () => {
     render(
       <MemoryRouter initialEntries={['/chat?stock=%3Cscript%3E&name=Bad%0AName&recordId=abc']}>

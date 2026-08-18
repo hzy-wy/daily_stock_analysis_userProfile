@@ -701,6 +701,8 @@ crontab -e
 > When the built-in scheduler is started via `python main.py --schedule` or an equivalent CLI-only mode, saving a new `SCHEDULE_TIME` / `SCHEDULE_TIMES` from the WebUI will rebind the daily jobs on the next scheduler poll without restarting the process. The previous trigger times are removed instead of being kept alongside the new ones. `python main.py --serve --schedule` is owned by the Web/API runtime scheduler, so long-running WebUI/API/Desktop processes start, stop, or rebuild the runtime scheduler after saving `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, or `SCHEDULE_TIMES`.
 >
 > The Web/API runtime scheduler run-now endpoint only accepts a request when no analysis is already running; if an analysis is in progress, it returns a busy response instead of reporting a queued run.
+>
+> The Web/API runtime scheduler moves the actual analysis onto a dedicated worker so one stock's network or model request cannot block scheduler polling. The global analysis lock still rejects overlapping triggers, and LiteLLM wall-clock time is bounded by the total `GENERATION_BACKEND_TIMEOUT_SECONDS` budget.
 
 ### Market Phase Baseline (Issue #1386 P0)
 

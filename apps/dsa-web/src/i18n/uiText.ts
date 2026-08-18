@@ -41,6 +41,16 @@ const zh = {
   'theme.theme': '主题',
   'theme.toggle': '切换主题',
 
+  'assistant.close': '关闭问股助手',
+  'assistant.loading': '正在加载问股工作区…',
+  'assistant.newReply': '有新的分析结果',
+  'assistant.open': '打开问股助手',
+  'assistant.openFullPage': '在完整页面中打开',
+  'assistant.openWithUpdate': '打开问股助手，有新的分析结果',
+  'assistant.ready': '随时分析',
+  'assistant.shortTitle': '问股',
+  'assistant.title': '问股智能助手',
+
   'layout.appFallbackDescription': 'Web workspace',
   'layout.appFallbackTitle': 'Daily Stock Analysis',
   'layout.collapseSidebar': '折叠侧边栏',
@@ -979,6 +989,16 @@ const en: Record<UiTextKey, string> = {
   'theme.system': 'System',
   'theme.theme': 'Theme',
   'theme.toggle': 'Toggle theme',
+
+  'assistant.close': 'Close Ask assistant',
+  'assistant.loading': 'Loading the Ask workspace…',
+  'assistant.newReply': 'New analysis available',
+  'assistant.open': 'Open Ask assistant',
+  'assistant.openFullPage': 'Open full-page workspace',
+  'assistant.openWithUpdate': 'Open Ask assistant, new analysis available',
+  'assistant.ready': 'Ready to analyze',
+  'assistant.shortTitle': 'Ask',
+  'assistant.title': 'Stock research assistant',
 
   'layout.appFallbackDescription': 'Web workspace',
   'layout.appFallbackTitle': 'Daily Stock Analysis',

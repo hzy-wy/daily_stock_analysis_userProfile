@@ -19,7 +19,7 @@ import {
 import { getParsedApiError } from '../../api/error';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { cn } from '../../utils/cn';
-import { Card, EmptyState, InlineAlert } from '../common';
+import { Card, EmptyState, InlineAlert, Tooltip } from '../common';
 
 const REFRESH_INTERVAL_MS = 60_000;
 
@@ -350,21 +350,25 @@ export const MarketDashboard: React.FC<MarketDashboardProps> = ({
           {data ? Object.entries(data.blocks || {})
             .filter(([, block]) => block.status !== 'unsupported')
             .map(([name, block]) => (
-              <span
+              <Tooltip
                 key={name}
-                title={[
+                content={[
                   block.updatedAt ? `${text.updated}: ${formatDateTime(block.updatedAt, language)}` : null,
                   block.message,
                 ].filter(Boolean).join(' · ') || undefined}
-                className={cn(
-                  'rounded-full border px-2 py-0.5',
-                  block.status === 'fresh'
-                    ? 'border-white/10 text-secondary'
-                    : 'border-warning/20 bg-warning/5 text-warning',
-                )}
+                focusable
               >
-                {blockLabels[name] || name}: {blockStatusLabels[block.status] || block.status}
-              </span>
+                <span
+                  className={cn(
+                    'rounded-full border px-2 py-0.5',
+                    block.status === 'fresh'
+                      ? 'border-white/10 text-secondary'
+                      : 'border-warning/20 bg-warning/5 text-warning',
+                  )}
+                >
+                  {blockLabels[name] || name}: {blockStatusLabels[block.status] || block.status}
+                </span>
+              </Tooltip>
             )) : null}
         </div>
       </Card>

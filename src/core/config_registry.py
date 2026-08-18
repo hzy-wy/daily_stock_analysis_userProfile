@@ -205,7 +205,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "GENERATION_BACKEND_TIMEOUT_SECONDS": {
         "title": "Generation Backend Timeout",
-        "description": "Maximum seconds allowed for one generation backend call. Applies to local CLI backends; LiteLLM behavior is unchanged.",
+        "description": "Total seconds allowed for one generation. LiteLLM shares this budget across streaming, fallback models, and integrity retries; local CLI backends also use it.",
         "category": "ai_model",
         "data_type": "integer",
         "ui_control": "number",

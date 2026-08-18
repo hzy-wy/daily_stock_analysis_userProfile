@@ -7,6 +7,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -219,6 +221,43 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         self.assertIsNotNone(status["last_run_at"])
         self.assertIsNotNone(status["last_success_at"])
         self.assertIsNone(status["last_error"])
+
+    def test_scheduled_analysis_does_not_block_scheduler_thread(self) -> None:
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        started = threading.Event()
+        release = threading.Event()
+
+        def runner(config_arg, args, stock_codes):
+            started.set()
+            release.wait(timeout=2)
+            return True
+
+        service = RuntimeSchedulerService(
+            config_provider=lambda: config,
+            task_runner=runner,
+        )
+        service._reload_config = lambda: config
+        service._thread = threading.current_thread()
+
+        started_at = time.monotonic()
+        accepted = service._dispatch_scheduled_analysis()
+        elapsed = time.monotonic() - started_at
+
+        self.assertTrue(accepted)
+        self.assertLess(elapsed, 0.5)
+        self.assertTrue(started.wait(timeout=1))
+        self.assertTrue(service.status()["running"])
+
+        worker = service._analysis_thread
+        release.set()
+        self.assertIsNotNone(worker)
+        worker.join(timeout=2)
+        self.assertFalse(service.status()["running"])
+        self.assertIsNotNone(service.status()["last_success_at"])
 
     def test_run_now_uses_shared_lock_across_service_instances(self) -> None:
         config = SimpleNamespace(

@@ -135,6 +135,7 @@ class RuntimeSchedulerService:
         self._run_lock = _RUNTIME_ANALYSIS_LOCK
         self._scheduler: Optional[Scheduler] = None
         self._thread: Optional[threading.Thread] = None
+        self._analysis_thread: Optional[threading.Thread] = None
         self._enabled = False
         self._last_run_at: Optional[str] = None
         self._last_success_at: Optional[str] = None
@@ -198,6 +199,46 @@ class RuntimeSchedulerService:
             self._run_analysis_locked(stock_codes)
         finally:
             self._run_lock.release()
+        return True
+
+    def _dispatch_scheduled_analysis(self, stock_codes: Optional[List[str]] = None) -> bool:
+        """Start a scheduled run without blocking the scheduler loop.
+
+        Real jobs execute on ``runtime-scheduler`` and are moved to a dedicated
+        worker. Direct invocations remain synchronous for compatibility with
+        startup execution and deterministic scheduler adapters used by tests.
+        """
+        if self._thread is None or threading.current_thread() is not self._thread:
+            return self._run_analysis_once(stock_codes)
+
+        if not self._run_lock.acquire(blocking=False):
+            self._record_analysis_busy_skip()
+            return False
+
+        def run_and_release() -> None:
+            try:
+                self._run_analysis_locked(stock_codes)
+            finally:
+                self._run_lock.release()
+                with self._lock:
+                    if self._analysis_thread is threading.current_thread():
+                        self._analysis_thread = None
+
+        worker = threading.Thread(
+            target=run_and_release,
+            daemon=True,
+            name="runtime-scheduled-analysis",
+        )
+        try:
+            with self._lock:
+                self._analysis_thread = worker
+            worker.start()
+        except Exception:
+            with self._lock:
+                if self._analysis_thread is worker:
+                    self._analysis_thread = None
+            self._run_lock.release()
+            raise
         return True
 
     def _current_times(self) -> List[str]:
@@ -285,9 +326,12 @@ class RuntimeSchedulerService:
                 register_signals=False,
             )
             if run_immediately and self._run_immediately_in_background:
-                scheduler.set_daily_task(self._run_analysis_once, run_immediately=False)
+                scheduler.set_daily_task(self._dispatch_scheduled_analysis, run_immediately=False)
             else:
-                scheduler.set_daily_task(self._run_analysis_once, run_immediately=run_immediately)
+                scheduler.set_daily_task(
+                    self._dispatch_scheduled_analysis,
+                    run_immediately=run_immediately,
+                )
             for entry in background_tasks:
                 scheduler.add_background_task(
                     entry["task"],

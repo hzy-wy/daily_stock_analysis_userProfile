@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 修复 Windows 上 mimetypes 冷启动时读取注册表导致的进程卡死
 - [新功能] Web 首页与 `POST /api/v1/analysis/market-review` 支持用严格校验的 `region` 字符串临时选择单个或多个复盘市场；一次性覆盖不读取或修改全局配置，“服务器默认”在任务提交边界解析为 canonical 实际执行市场，并贯穿 accepted 响应、任务状态/列表/SSE、完成态结构化 payload 与 History。
 - [修复] GitHub Actions PR Review 流程中的 `_event_payload()` 此前用 `except (OSError, ValueError): return {}` 把「事件文件缺失」「文件不可读」「JSON 非法」三类异常统一吞成空对象，下游只表现为 `PR number is unavailable` 无法定位根因；现保留空对象降级行为不变，但分别对三类失败输出不含载荷内容的警告（仅含异常类型与 `GITHUB_EVENT_PATH` 源路径），并补齐三类降级路径与「坏载荷导致 PR 编号不可用」链路的回归测试（fixes #2070）
+- [修复] LiteLLM 个股分析将 `GENERATION_BACKEND_TIMEOUT_SECONDS` 落实为覆盖流式、非流式回退、备用模型和报告完整性重试的总墙钟预算，并把 Web/API runtime scheduler 的实际分析移至独立工作线程，避免单个无响应模型请求卡死后续定时任务；批次中部分股票失败时仍汇总并推送其余成功结果。
+- [改进] Web 全局界面升级为响应式金融科技视觉层，扩大有效内容画布并统一环境光、细网格、面板、按钮和无障碍动效；“问股”从主导航迁移到复用原会话与 API 逻辑的全局浮动助手，同时保留完整 `/chat` 路由、未读提示和键盘入口。
 
 ## [3.27.0] - 2026-07-19
 

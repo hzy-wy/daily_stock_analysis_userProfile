@@ -131,6 +131,25 @@ class TestPipelineSingleStockNotify(unittest.TestCase):
         _, kwargs = pipeline._send_notifications.call_args
         self.assertTrue(kwargs["skip_push"])
 
+    def test_run_still_sends_aggregate_when_one_stock_fails(self):
+        pipeline = self._build_batch_pipeline()
+        pipeline.config.single_stock_notify = False
+        pipeline.process_single_stock = MagicMock(
+            side_effect=[_make_result("000001"), _make_result("600519", success=False)]
+        )
+
+        results = pipeline.run(
+            stock_codes=["000001", "600519"],
+            dry_run=False,
+            send_notification=True,
+        )
+
+        self.assertEqual([result.code for result in results], ["000001"])
+        pipeline._save_local_report.assert_called_once()
+        pipeline._send_notifications.assert_called_once()
+        notified_results = pipeline._send_notifications.call_args.args[0]
+        self.assertEqual([result.code for result in notified_results], ["000001"])
+
     def test_process_single_stock_direct_path_keeps_notify_compatibility(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
         pipeline.fetch_and_save_stock_data = MagicMock(return_value=(True, None))

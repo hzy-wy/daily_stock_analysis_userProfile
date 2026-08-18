@@ -1,0 +1,27 @@
+# Web 金融科技界面与问股助手
+
+## 设计目标
+
+Web 界面采用统一的金融科技视觉层：深浅主题共享同一组语义色、面板边界、环境光、细网格和动效规则。布局在宽屏下最多使用 1920px 画布，业务页面内容区域最多使用 1600px，减少无效留白，同时保留小屏响应式行为。
+
+动效只用于表达状态和层级，包括页面进入、导航选中、按钮反馈、环境光和问股面板开合。系统启用“减少动态效果”时，界面会自动关闭非必要动画。
+
+## 全局问股助手
+
+- “问股”不再占用主导航栏；桌面端和移动端均通过右下角浮动入口打开。
+- 浮动助手直接复用原有 `ChatPage`、Zustand 会话状态、API 请求、策略选择、历史会话和通知能力，不建立第二套问股实现。
+- `/chat` 路由继续保留，用于深链接、历史入口和完整页面工作区。浮动面板右上角可以切换到完整页面。
+- 快捷键 `Ctrl + Shift + A`（macOS 为 `Command + Shift + A`）可打开或关闭助手，`Escape` 可关闭面板。
+- 当用户离开问股界面后分析完成，未读状态显示在浮动入口；打开助手后清除该提示。
+
+## 稳定性边界
+
+本次界面层不修改 Agent API、分析任务、数据 Schema、模型配置或报告生成逻辑。浮动模式不会消费当前业务页面的查询参数；只有完整 `/chat` 页面继续处理 `stock`、`name` 和 `recordId` 追问参数。
+
+主要实现入口：
+
+- `apps/dsa-web/src/components/assistant/FloatingStockAssistant.tsx`
+- `apps/dsa-web/src/components/layout/Shell.tsx`
+- `apps/dsa-web/src/pages/ChatPage.tsx`
+- `apps/dsa-web/src/index.css`
+
