@@ -651,6 +651,68 @@ class PortfolioServiceTestCase(unittest.TestCase):
         self.assertAlmostEqual(position["daily_pnl_pct"], expected_daily_pct, places=6)
         self.assertAlmostEqual(position["daily_pnl_pct"], -4.035105703, places=6)
 
+    def test_account_daily_pnl_includes_today_fully_closed_position(self) -> None:
+        today = date.today()
+        account = self.service.create_account(
+            name="Closed position daily pnl",
+            broker="Demo",
+            market="cn",
+            base_currency="CNY",
+        )
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=today - timedelta(days=7),
+            direction="in",
+            amount=10000,
+            currency="CNY",
+        )
+        for symbol, trade_date, side, quantity, price, fee in [
+            ("601179", today - timedelta(days=1), "buy", 500, 13.95, 0.0),
+            ("601179", today, "sell", 500, 13.38, 7.01),
+            ("600598", today, "buy", 500, 13.67, 6.01),
+        ]:
+            self.service.record_trade(
+                account_id=aid,
+                symbol=symbol,
+                trade_date=trade_date,
+                side=side,
+                quantity=quantity,
+                price=price,
+                fee=fee,
+                market="cn",
+                currency="CNY",
+            )
+
+        # Deliberately stale history for the closed symbol: a live snapshot must
+        # use the quote's pre-close instead of silently treating this as yesterday.
+        self._save_close("601179", today - timedelta(days=5), 13.51)
+
+        with (
+            patch.object(
+                PortfolioService,
+                "_fetch_realtime_position_price",
+                return_value=(13.86, "unit-test"),
+            ),
+            patch.object(
+                PortfolioService,
+                "_fetch_realtime_previous_close",
+                return_value=13.62,
+            ) as previous_close_fetch,
+        ):
+            snapshot = self.service.get_portfolio_snapshot(
+                account_id=aid,
+                as_of=today,
+                cost_method="fifo",
+            )
+
+        account_snapshot = snapshot["accounts"][0]
+        self.assertEqual([position["symbol"] for position in account_snapshot["positions"]], ["600598"])
+        self.assertAlmostEqual(account_snapshot["positions"][0]["daily_pnl_base"], 88.99, places=6)
+        self.assertAlmostEqual(account_snapshot["daily_pnl"], -38.02, places=6)
+        self.assertAlmostEqual(snapshot["daily_pnl"], -38.02, places=6)
+        previous_close_fetch.assert_called_once_with("601179")
+
     def test_position_dashboard_available_quantity_uses_cn_t_plus_one_rule(self) -> None:
         account = self.service.create_account(name="Available", broker="Demo", market="cn", base_currency="CNY")
         aid = account["id"]

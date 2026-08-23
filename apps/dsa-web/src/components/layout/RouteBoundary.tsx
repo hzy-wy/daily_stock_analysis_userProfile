@@ -3,6 +3,7 @@ import { Component, Suspense } from 'react';
 import type { ErrorInfo } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import { RouteMotionFrame } from './RouteMotionFrame';
 
 type PageLoadingFallbackProps = {
   fullPage?: boolean;
@@ -12,7 +13,7 @@ export const PageLoadingFallback: React.FC<PageLoadingFallbackProps> = ({ fullPa
   <div
     className={
       fullPage
-        ? 'flex min-h-screen items-center justify-center bg-base'
+        ? 'flex min-h-[100dvh] items-center justify-center bg-base'
         : 'flex min-h-[60vh] items-center justify-center'
     }
   >
@@ -64,7 +65,7 @@ class RouteErrorBoundary extends Component<RouteErrorBoundaryProps, RouteErrorBo
       <div
         className={
           this.props.fullPage
-            ? 'flex min-h-screen items-center justify-center bg-base px-4'
+            ? 'flex min-h-[100dvh] items-center justify-center bg-base px-4'
             : 'flex min-h-[60vh] items-center justify-center px-2 py-8'
         }
       >
@@ -114,7 +115,9 @@ export const RouteBoundary: React.FC<{ children: React.ReactNode; fullPage?: boo
         backHome: t('routeError.backHome'),
       }}
     >
-      <Suspense fallback={<PageLoadingFallback fullPage={fullPage} />}>{children}</Suspense>
+      <Suspense fallback={<PageLoadingFallback fullPage={fullPage} />}>
+        <RouteMotionFrame key={resetKey}>{children}</RouteMotionFrame>
+      </Suspense>
     </RouteErrorBoundary>
   );
 };

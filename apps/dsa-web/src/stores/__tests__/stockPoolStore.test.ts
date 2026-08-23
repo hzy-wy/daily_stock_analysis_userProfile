@@ -1050,6 +1050,8 @@ describe('stockPoolStore', () => {
     const state = useStockPoolStore.getState();
     expect(state.activeTasks).toHaveLength(0);
     expect(state.error).toBeTruthy();
+    expect(state.error?.title).toBe('Apple 分析未完成');
+    expect(state.error?.message).toContain('其他股票任务不受影响');
   });
 
   it('reconciles active tasks from a complete empty backend snapshot without dismissing them', async () => {

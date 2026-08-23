@@ -140,6 +140,8 @@ const vendorChunkByPackage: Record<string, string> = {
   'framer-motion': 'vendor-motion',
   'motion-dom': 'vendor-motion',
   'motion-utils': 'vendor-motion',
+  gsap: 'vendor-motion',
+  '@gsap/react': 'vendor-motion',
   'lucide-react': 'vendor-icons',
   recharts: 'vendor-charts',
   'victory-vendor': 'vendor-charts',

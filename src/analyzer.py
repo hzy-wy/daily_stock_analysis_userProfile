@@ -18,6 +18,8 @@ import queue
 import re
 import threading
 import time
+from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable
 
@@ -73,7 +75,11 @@ from src.llm.usage import (
     normalize_litellm_usage,
     should_persist_usage_telemetry,
 )
-from src.llm.local_cli_backend import redact_diagnostic_text
+from src.llm.local_cli_backend import (
+    DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY,
+    MAX_GENERATION_BACKEND_MAX_CONCURRENCY,
+    redact_diagnostic_text,
+)
 from src.llm.provider_cache import (
     apply_prompt_cache_hints,
     build_provider_cache_route_context,
@@ -110,6 +116,55 @@ from src.market_structure_prompt import format_market_structure_prompt_section
 logger = logging.getLogger(__name__)
 
 DEFAULT_LITELLM_TIMEOUT_SECONDS = 300.0
+_LITELLM_CONCURRENCY_CONDITION = threading.Condition()
+_LITELLM_CONCURRENCY_ACTIVE = 0
+_LITELLM_CONCURRENCY_WAITERS = deque()
+
+
+def _effective_litellm_concurrency(config: Any) -> int:
+    """Return the shared LiteLLM concurrency cap from runtime configuration."""
+    try:
+        configured = int(
+            getattr(
+                config,
+                "generation_backend_max_concurrency",
+                DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY,
+            )
+        )
+    except (TypeError, ValueError):
+        configured = DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY
+    return max(1, min(configured, MAX_GENERATION_BACKEND_MAX_CONCURRENCY))
+
+
+@contextmanager
+def _litellm_concurrency_slot(limit: int):
+    """Serialize LiteLLM generations without serializing data collection tasks."""
+    global _LITELLM_CONCURRENCY_ACTIVE
+
+    normalized_limit = max(1, min(int(limit), MAX_GENERATION_BACKEND_MAX_CONCURRENCY))
+    waiter = object()
+    with _LITELLM_CONCURRENCY_CONDITION:
+        _LITELLM_CONCURRENCY_WAITERS.append(waiter)
+        try:
+            _LITELLM_CONCURRENCY_CONDITION.wait_for(
+                lambda: (
+                    _LITELLM_CONCURRENCY_ACTIVE < normalized_limit
+                    and _LITELLM_CONCURRENCY_WAITERS[0] is waiter
+                )
+            )
+        except BaseException:
+            _LITELLM_CONCURRENCY_WAITERS.remove(waiter)
+            _LITELLM_CONCURRENCY_CONDITION.notify_all()
+            raise
+        _LITELLM_CONCURRENCY_WAITERS.popleft()
+        _LITELLM_CONCURRENCY_ACTIVE += 1
+        _LITELLM_CONCURRENCY_CONDITION.notify_all()
+    try:
+        yield
+    finally:
+        with _LITELLM_CONCURRENCY_CONDITION:
+            _LITELLM_CONCURRENCY_ACTIVE = max(0, _LITELLM_CONCURRENCY_ACTIVE - 1)
+            _LITELLM_CONCURRENCY_CONDITION.notify_all()
 
 
 def _coerce_positive_timeout(
@@ -3140,6 +3195,53 @@ class GeminiAnalyzer:
         return result.text, result.model, result.usage
 
     def _call_litellm_impl(
+        self,
+        prompt: str,
+        generation_config: dict,
+        *,
+        system_prompt: Optional[str] = None,
+        stream: bool = False,
+        stream_progress_callback: Optional[Callable[[int], None]] = None,
+        response_validator: Optional[Callable[[str], None]] = None,
+        audit_context: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, str, Dict[str, Any]]:
+        """Apply the global generation cap before entering the LiteLLM retry chain.
+
+        Queueing for an available generation slot is intentionally outside the
+        provider timeout budget. Data retrieval and technical analysis remain
+        parallel; only the scarce LLM generation stage is protected.
+        """
+        config = self._get_runtime_config()
+        concurrency_limit = _effective_litellm_concurrency(config)
+        queued_at = time.monotonic()
+
+        with _litellm_concurrency_slot(concurrency_limit):
+            waited_seconds = time.monotonic() - queued_at
+            guarded_config = dict(generation_config or {})
+            requested_timeout = _coerce_positive_timeout(
+                guarded_config.get(
+                    "timeout",
+                    getattr(config, "generation_backend_timeout_seconds", None),
+                )
+            )
+            guarded_config["_deadline_monotonic"] = time.monotonic() + requested_timeout
+            if waited_seconds >= 0.1:
+                logger.info(
+                    "LiteLLM generation waited %.2fs for concurrency slot (limit=%d)",
+                    waited_seconds,
+                    concurrency_limit,
+                )
+            return self._call_litellm_impl_unlimited(
+                prompt,
+                guarded_config,
+                system_prompt=system_prompt,
+                stream=stream,
+                stream_progress_callback=stream_progress_callback,
+                response_validator=response_validator,
+                audit_context=audit_context,
+            )
+
+    def _call_litellm_impl_unlimited(
         self,
         prompt: str,
         generation_config: dict,

@@ -129,6 +129,7 @@ class TestAnalyzerGenerateText:
             cfg.generation_backend = "litellm"
             cfg.generation_fallback_backend = "litellm"
             cfg.generation_backend_timeout_seconds = 300
+            cfg.generation_backend_max_concurrency = 1
             mock_cfg.return_value = cfg
             from src.analyzer import GeminiAnalyzer
             analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
@@ -487,6 +488,72 @@ class TestAnalyzerGenerateText:
         assert time.monotonic() - started_at < 0.5
         assert observed_timeouts
         assert 0 < observed_timeouts[0] <= 0.051
+
+    def test_litellm_generation_queues_at_global_limit_and_resets_deadline(self):
+        analyzer = self._make_analyzer()
+        first_entered = threading.Event()
+        second_started = threading.Event()
+        release_first = threading.Event()
+        observations = []
+        errors = []
+        observation_lock = threading.Lock()
+
+        def fake_unlimited(prompt, generation_config, **_kwargs):
+            with observation_lock:
+                observations.append(
+                    (
+                        prompt,
+                        generation_config["_deadline_monotonic"] - time.monotonic(),
+                    )
+                )
+            if prompt == "first":
+                first_entered.set()
+                release_first.wait(timeout=1)
+            return "ok", "test/model", {}
+
+        def run(prompt, *, started_event=None):
+            if started_event is not None:
+                started_event.set()
+            try:
+                analyzer._call_litellm_impl(
+                    prompt,
+                    {
+                        "timeout": 1,
+                        "_deadline_monotonic": time.monotonic() - 10,
+                    },
+                )
+            except Exception as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        with patch.object(
+            analyzer,
+            "_call_litellm_impl_unlimited",
+            side_effect=fake_unlimited,
+        ):
+            first_thread = threading.Thread(target=run, args=("first",))
+            second_thread = threading.Thread(
+                target=run,
+                args=("second",),
+                kwargs={"started_event": second_started},
+            )
+            first_thread.start()
+            assert first_entered.wait(timeout=1)
+            second_thread.start()
+            assert second_started.wait(timeout=1)
+            time.sleep(0.05)
+
+            with observation_lock:
+                assert [item[0] for item in observations] == ["first"]
+
+            release_first.set()
+            first_thread.join(timeout=1)
+            second_thread.join(timeout=1)
+
+        assert not errors
+        assert not first_thread.is_alive()
+        assert not second_thread.is_alive()
+        assert [item[0] for item in observations] == ["first", "second"]
+        assert all(0.8 < remaining <= 1 for _, remaining in observations)
 
     def test_call_litellm_wrapper_uses_generation_backend_tuple_contract(self):
         from src.llm.generation_backend import GenerationBackend

@@ -6,6 +6,13 @@ Web 界面采用统一的金融科技视觉层：深浅主题共享同一组语�
 
 动效只用于表达状态和层级，包括页面进入、导航选中、按钮反馈、环境光和问股面板开合。系统启用“减少动态效果”时，界面会自动关闭非必要动画。
 
+## 商业化动效与宽屏工作区
+
+- 登录页使用左右分屏建立产品叙事与操作焦点：左侧展示与股票分析真实能力一致的产品说明，右侧保留原有认证表单、错误处理和跳转逻辑。标题按词分层入场，品牌标记和环境光仅在精细指针设备上轻量跟随，不替换系统光标。
+- 已解析的业务路由统一经过 GSAP 过渡层。页面主体和有限数量的首层内容依次进入，动画使用 `transform` 与 `opacity`，并在路由卸载时自动清理，避免影响长列表和高密度看板性能。
+- 首页历史报告不再限制为固定 `max-width`，会占满侧栏之外的可用画布；报告内部已有卡片栅格继续按断点重排，因此宽屏减少右侧空洞，小屏仍保持单列阅读。
+- 全局指针环境光只在支持精细指针且未请求减少动效时开启。系统启用“减少动态效果”或“减少透明度”后，非必要位移、扫描线和半透明材质会自动停用或转为实色表面。
+
 ## 全局导航与响应式布局
 
 - 桌面端不再使用左侧固定导航栏，改为页面顶部的悬浮命令栏；首页、选股、持仓、AI 建议和回测保持一级入口，告警、用量、设置和退出收纳到“更多”菜单。
@@ -30,6 +37,10 @@ Web 界面采用统一的金融科技视觉层：深浅主题共享同一组语�
 
 - `apps/dsa-web/src/components/assistant/FloatingStockAssistant.tsx`
 - `apps/dsa-web/src/components/layout/CommandNavigation.tsx`
+- `apps/dsa-web/src/components/layout/PointerSpotlight.tsx`
+- `apps/dsa-web/src/components/layout/RouteMotionFrame.tsx`
 - `apps/dsa-web/src/components/layout/Shell.tsx`
+- `apps/dsa-web/src/pages/HomePage.tsx`
+- `apps/dsa-web/src/pages/LoginPage.tsx`
 - `apps/dsa-web/src/pages/ChatPage.tsx`
 - `apps/dsa-web/src/index.css`

@@ -1184,7 +1184,7 @@ const PortfolioPage: React.FC = () => {
     : null;
 
   return (
-    <div className="portfolio-page min-h-screen space-y-4 p-4 md:p-6">
+    <div className="portfolio-page min-h-[100dvh] space-y-4 overflow-x-clip p-4 md:p-6">
       <section className="space-y-3">
         <div className="space-y-2">
           <h1 className="text-xl md:text-2xl font-semibold text-foreground">{text.title}</h1>
@@ -1194,7 +1194,7 @@ const PortfolioPage: React.FC = () => {
         </div>
         {hasAccounts ? (
           <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
-            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_220px_280px] gap-2 items-end">
+            <div className="grid grid-cols-1 items-end gap-2 xl:grid-cols-[minmax(0,1fr)_220px_minmax(360px,auto)]">
               <div>
                 <p className="text-xs text-secondary mb-1">{text.accountView}</p>
                 <select
@@ -1221,10 +1221,10 @@ const PortfolioPage: React.FC = () => {
                   <option value="avg">{text.avg}</option>
                 </select>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <button
                   type="button"
-                  className="btn-secondary text-sm flex-1"
+                  className="btn-secondary whitespace-nowrap text-sm"
                   onClick={() => {
                     setShowCreateAccount((prev) => !prev);
                     setAccountCreateError(null);
@@ -1237,7 +1237,7 @@ const PortfolioPage: React.FC = () => {
                   type="button"
                   onClick={() => void handleRefresh()}
                   disabled={isLoading || fxRefreshing}
-                  className="btn-secondary text-sm flex-1"
+                  className="btn-secondary whitespace-nowrap text-sm"
                 >
                   {isLoading ? text.refreshing : text.refreshData}
                 </button>
@@ -1245,7 +1245,7 @@ const PortfolioPage: React.FC = () => {
                   type="button"
                   onClick={openAccountDeleteDialog}
                   disabled={!canDeleteSelectedAccount}
-                  className="btn-secondary text-sm flex-1 border-red-400/40 text-red-100 hover:bg-red-500/15 disabled:border-white/10 disabled:text-secondary"
+                  className="btn-secondary whitespace-nowrap border-red-400/40 text-sm text-red-100 hover:bg-red-500/15 disabled:border-white/10 disabled:text-secondary"
                 >
                   {accountDeleteLoading ? text.deletingAccount : text.deleteAccount}
                 </button>

@@ -973,7 +973,15 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
 
   syncTaskFailed: (task) => {
     get().syncTaskUpdated(task);
-    set({ error: getParsedApiError(task.error || '分析失败') });
+    const parsedError = getParsedApiError(task.error || '分析失败');
+    const stockLabel = task.stockName?.trim() || task.stockCode;
+    set({
+      error: {
+        ...parsedError,
+        title: `${stockLabel} 分析未完成`,
+        message: `${parsedError.message} 本次批量中的其他股票任务不受影响，将继续执行。`,
+      },
+    });
   },
 
   refreshActiveTasks: async () => {

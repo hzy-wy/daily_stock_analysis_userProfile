@@ -125,6 +125,7 @@ class PortfolioService:
 
     def __init__(self, repo: Optional[PortfolioRepository] = None):
         self.repo = repo or PortfolioRepository()
+        self._realtime_previous_close_cache: Dict[str, Optional[float]] = {}
 
     # ------------------------------------------------------------------
     # Account CRUD
@@ -738,6 +739,7 @@ class PortfolioService:
     ) -> Dict[str, Any]:
         as_of_date = as_of or date.today()
         method = self._normalize_cost_method(cost_method)
+        self._realtime_previous_close_cache.clear()
 
         if account_id is not None:
             account = self._require_active_account(account_id)
@@ -1341,27 +1343,19 @@ class PortfolioService:
 
         unrealized_pnl_base = market_value_base - total_cost_base
         total_equity_base = total_cash_base + market_value_base
-        metric_fx_stale = self._enrich_position_dashboard_metrics(
+        metric_fx_stale, daily_pnl_base = self._enrich_position_dashboard_metrics(
             account=account,
             as_of_date=as_of_date,
             trades=trades,
             corporate_actions=corporate_actions,
             positions=position_rows,
             total_equity_base=total_equity_base,
+            include_realtime=include_realtime,
         )
         fx_stale = fx_stale or metric_fx_stale
         holding_pnl_base = sum(
             float(position.get("holding_pnl_base") or 0.0)
             for position in position_rows
-        )
-        daily_pnl_values = [
-            position.get("daily_pnl_base")
-            for position in position_rows
-        ]
-        daily_pnl_base = (
-            sum(float(value or 0.0) for value in daily_pnl_values)
-            if all(value is not None for value in daily_pnl_values)
-            else None
         )
         position_limitations = [
             limitation
@@ -1596,8 +1590,9 @@ class PortfolioService:
         corporate_actions: Iterable[Any],
         positions: List[Dict[str, Any]],
         total_equity_base: float,
-    ) -> bool:
-        """Add broker-style position fields used by the account dashboard."""
+        include_realtime: bool,
+    ) -> Tuple[bool, Optional[float]]:
+        """Add broker-style position fields and calculate account-level daily P&L."""
 
         today_trade_stats: Dict[Tuple[str, str, str], Dict[str, float]] = defaultdict(
             lambda: {
@@ -1645,16 +1640,17 @@ class PortfolioService:
                 split_keys.add(key)
 
         metric_fx_stale = False
+        position_by_key: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         for position in positions:
             key = (
                 str(position.get("symbol") or ""),
                 str(position.get("market") or ""),
                 str(position.get("currency") or ""),
             )
+            position_by_key[key] = position
             quantity = float(position.get("quantity") or 0.0)
             stats = today_trade_stats.get(key, {})
             bought_today = float(stats.get("buy_quantity") or 0.0)
-            sold_today = float(stats.get("sell_quantity") or 0.0)
 
             if key[1] == "cn":
                 available_quantity = max(0.0, quantity - bought_today)
@@ -1686,23 +1682,48 @@ class PortfolioService:
 
             position["daily_pnl_base"] = None
             position["daily_pnl_pct"] = None
-            if (
-                key in split_keys
-                or not bool(position.get("price_available"))
-                or position.get("price_date") != as_of_date.isoformat()
-            ):
+
+        metric_keys = set(position_by_key) | set(today_trade_stats) | set(today_dividends)
+        daily_pnl_complete = True
+        account_daily_pnl_base = 0.0
+        for key in metric_keys:
+            position = position_by_key.get(key)
+            quantity = float(position.get("quantity") or 0.0) if position is not None else 0.0
+            stats = today_trade_stats.get(key, {})
+            bought_today = float(stats.get("buy_quantity") or 0.0)
+            sold_today = float(stats.get("sell_quantity") or 0.0)
+            opening_quantity = max(0.0, quantity - bought_today + sold_today)
+
+            if key in split_keys:
+                daily_pnl_complete = False
                 continue
 
-            previous_close = self.repo.get_latest_close_with_date(
-                symbol=key[0],
-                as_of=as_of_date - timedelta(days=1),
-            )
-            if previous_close is None:
-                continue
-            previous_close_price, _ = previous_close
-            opening_quantity = max(0.0, quantity - bought_today + sold_today)
-            opening_market_value = opening_quantity * float(previous_close_price)
-            closing_market_value = quantity * last_price
+            if quantity > EPS:
+                if (
+                    position is None
+                    or not bool(position.get("price_available"))
+                    or position.get("price_date") != as_of_date.isoformat()
+                ):
+                    daily_pnl_complete = False
+                    continue
+                closing_market_value = quantity * float(position.get("last_price") or 0.0)
+            else:
+                closing_market_value = 0.0
+
+            if opening_quantity > EPS:
+                previous_close_price = self._resolve_previous_close_price(
+                    symbol=key[0],
+                    market=key[1],
+                    as_of_date=as_of_date,
+                    include_realtime=include_realtime,
+                )
+                if previous_close_price is None:
+                    daily_pnl_complete = False
+                    continue
+                opening_market_value = opening_quantity * previous_close_price
+            else:
+                opening_market_value = 0.0
+
             dividend_cash = opening_quantity * today_dividends.get(key, 0.0)
             buy_cash = float(stats.get("buy_cash") or 0.0)
             sell_cash = float(stats.get("sell_cash") or 0.0)
@@ -1720,6 +1741,11 @@ class PortfolioService:
                 as_of_date=as_of_date,
             )
             metric_fx_stale = metric_fx_stale or stale_daily
+            account_daily_pnl_base += daily_pnl_base
+
+            if position is None:
+                continue
+
             net_new_position_cash = max(0.0, buy_cash - sell_cash)
             daily_denominator = opening_market_value + net_new_position_cash
             if daily_denominator <= EPS:
@@ -1731,7 +1757,10 @@ class PortfolioService:
                 else None
             )
 
-        return metric_fx_stale
+        return (
+            metric_fx_stale,
+            account_daily_pnl_base if daily_pnl_complete else None,
+        )
 
     @staticmethod
     def _resolve_local_stock_name(symbol: str) -> Optional[str]:
@@ -1839,8 +1868,7 @@ class PortfolioService:
 
         return results
 
-    @staticmethod
-    def _fetch_realtime_position_price(symbol: str) -> Tuple[Optional[float], Optional[str]]:
+    def _fetch_realtime_position_price(self, symbol: str) -> Tuple[Optional[float], Optional[str]]:
         try:
             from data_provider.base import DataFetcherManager
 
@@ -1848,10 +1876,16 @@ class PortfolioService:
             quote = fetcher_manager.get_realtime_quote(symbol, log_final_failure=False)
         except Exception as exc:
             logger.warning("Failed to fetch realtime portfolio price for %s: %s", symbol, exc)
+            self._realtime_previous_close_cache[symbol] = None
             return None, None
 
         if quote is None:
+            self._realtime_previous_close_cache[symbol] = None
             return None, None
+
+        self._realtime_previous_close_cache[symbol] = self._positive_float_or_none(
+            getattr(quote, "pre_close", None)
+        )
 
         price = getattr(quote, "price", None)
         try:
@@ -1865,6 +1899,65 @@ class PortfolioService:
         source = getattr(quote, "source", None)
         provider = getattr(source, "value", None) or (str(source) if source is not None else None)
         return numeric_price, provider
+
+    def _resolve_previous_close_price(
+        self,
+        *,
+        symbol: str,
+        market: str,
+        as_of_date: date,
+        include_realtime: bool,
+    ) -> Optional[float]:
+        cached_realtime = self._realtime_previous_close_cache.get(symbol)
+        if cached_realtime is not None and cached_realtime > 0:
+            return cached_realtime
+
+        stored_close = self.repo.get_latest_close_with_date(
+            symbol=symbol,
+            as_of=as_of_date - timedelta(days=1),
+        )
+        if stored_close is not None:
+            stored_price, stored_date = stored_close
+            has_missing_session = count_market_sessions(
+                market,
+                stored_date + timedelta(days=1),
+                as_of_date - timedelta(days=1),
+            ) > 0
+            if stored_price > 0 and not has_missing_session:
+                return float(stored_price)
+
+        if include_realtime and as_of_date == date.today():
+            realtime_close = self._fetch_realtime_previous_close(symbol)
+            if realtime_close is not None:
+                return realtime_close
+        return None
+
+    def _fetch_realtime_previous_close(self, symbol: str) -> Optional[float]:
+        if symbol in self._realtime_previous_close_cache:
+            return self._realtime_previous_close_cache[symbol]
+
+        try:
+            from data_provider.base import DataFetcherManager
+
+            quote = DataFetcherManager().get_realtime_quote(symbol, log_final_failure=False)
+        except Exception as exc:
+            logger.warning("Failed to fetch realtime previous close for %s: %s", symbol, exc)
+            self._realtime_previous_close_cache[symbol] = None
+            return None
+
+        previous_close = self._positive_float_or_none(
+            getattr(quote, "pre_close", None) if quote is not None else None
+        )
+        self._realtime_previous_close_cache[symbol] = previous_close
+        return previous_close
+
+    @staticmethod
+    def _positive_float_or_none(value: Any) -> Optional[float]:
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            return None
+        return numeric_value if numeric_value > 0 else None
 
     @staticmethod
     def _normalize_symbol_for_storage(symbol: str) -> str:
