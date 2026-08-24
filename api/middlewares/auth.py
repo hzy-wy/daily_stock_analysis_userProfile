@@ -6,25 +6,41 @@ Auth middleware: protect /api/v1/* when admin auth is enabled.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Callable
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from src.auth import COOKIE_NAME, is_auth_enabled, verify_session
+from src.auth import ADMIN_COOKIE_NAME, APP_COOKIE_NAME, COOKIE_NAME, is_auth_enabled, verify_session
+from src.request_context import reset_actor_context, set_actor_context
+from src.services.identity_service import (
+    ADMIN_AUDIENCE,
+    APP_AUDIENCE,
+    get_identity_service,
+    is_multi_user_mode,
+)
 
 logger = logging.getLogger(__name__)
 
 EXEMPT_PATHS = frozenset({
     "/api/v1/auth/login",
     "/api/v1/auth/status",
+    "/api/v1/auth/invitations/accept",
+    "/api/v1/admin/auth/login",
+    "/api/v1/admin/auth/status",
     "/api/health",
     "/api/v1/health",
     "/health",
     "/docs",
     "/redoc",
     "/openapi.json",
+})
+
+MULTI_USER_LOGOUT_PATHS = frozenset({
+    "/api/v1/auth/logout",
+    "/api/v1/admin/auth/logout",
 })
 
 
@@ -46,11 +62,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path = request.url.path
+        if is_multi_user_mode():
+            origin_error = self._validate_mutation_origin(request)
+            if origin_error is not None:
+                return origin_error
+            if (path.rstrip("/") or "/") in MULTI_USER_LOGOUT_PATHS:
+                return await call_next(request)
         if _path_exempt(path):
             return await call_next(request)
 
         if not path.startswith("/api/v1/"):
             return await call_next(request)
+
+        if is_multi_user_mode():
+            return await self._dispatch_multi_user(request, call_next)
 
         cookie_val = request.cookies.get(COOKIE_NAME)
         if not cookie_val or not verify_session(cookie_val):
@@ -63,6 +88,124 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
 
         return await call_next(request)
+
+    async def _dispatch_multi_user(self, request: Request, call_next: Callable):
+        """Authenticate a database session and bind its principal to the request."""
+
+        service = get_identity_service()
+        service.ensure_ready()
+        if not service.has_owner():
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "bootstrap_required",
+                    "message": (
+                        "Multi-user authentication requires a platform owner. "
+                        "Run: python -m src.auth bootstrap_owner --username owner"
+                    ),
+                },
+            )
+
+        is_admin_path = request.url.path.startswith("/api/v1/admin/")
+        audience = ADMIN_AUDIENCE if is_admin_path else APP_AUDIENCE
+        cookie_name = ADMIN_COOKIE_NAME if is_admin_path else APP_COOKIE_NAME
+        token = request.cookies.get(cookie_name)
+        principal = service.principal_from_token(token or "", audience)
+        if principal is None:
+            return JSONResponse(
+                status_code=401,
+                content={"error": "unauthorized", "message": "Login required"},
+            )
+
+        permission = self._required_permission(request.url.path, request.method)
+        if permission and not principal.has_permission(permission):
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "error": "forbidden",
+                    "message": "You do not have permission to perform this operation",
+                },
+            )
+
+        request.state.principal = principal
+        actor_tokens = set_actor_context(principal.user_id, "user")
+        try:
+            response = await call_next(request)
+            if request.method.upper() not in {"GET", "HEAD", "OPTIONS"} and (
+                is_admin_path or permission
+            ):
+                service.audit(
+                    actor_type="user",
+                    actor_id=principal.user_id,
+                    action=f"api.{request.method.lower()}",
+                    resource_type="endpoint",
+                    resource_id=request.url.path,
+                    outcome="success" if response.status_code < 400 else "failure",
+                    request_id=request.headers.get("x-request-id"),
+                    ip_address=request.client.host if request.client else None,
+                    details={"statusCode": response.status_code},
+                )
+            return response
+        finally:
+            reset_actor_context(actor_tokens)
+
+    @staticmethod
+    def _required_permission(path: str, method: str = "GET") -> str | None:
+        """Apply deny-by-default gates to global high-risk route families."""
+
+        if path.startswith("/api/v1/system/") or path == "/api/v1/system":
+            return "system.configure"
+        if path == "/api/v1/auth/settings":
+            return "system.configure"
+        if path.startswith("/api/v1/alphasift/install"):
+            return "system.configure"
+        if (
+            path.startswith("/api/v1/intelligence/sources")
+            and method.upper() not in {"GET", "HEAD", "OPTIONS"}
+        ):
+            return "system.configure"
+        feature_permissions = (
+            ("/api/v1/agent", "chat.use"),
+            ("/api/v1/history", "analysis.read.own"),
+            ("/api/v1/backtest", "backtest.run"),
+            ("/api/v1/usage", "usage.read.own"),
+            ("/api/v1/portfolio", "portfolio.manage.own"),
+            ("/api/v1/alerts", "alerts.manage.own"),
+            ("/api/v1/decision-signals", "signals.read.own"),
+        )
+        for prefix, permission in feature_permissions:
+            if path == prefix or path.startswith(f"{prefix}/"):
+                return permission
+        if path == "/api/v1/analysis" or path.startswith("/api/v1/analysis/"):
+            return (
+                "analysis.read.own"
+                if method.upper() in {"GET", "HEAD", "OPTIONS"}
+                else "analysis.run"
+            )
+        return None
+
+    @staticmethod
+    def _validate_mutation_origin(request: Request) -> JSONResponse | None:
+        """Reject cross-origin browser mutations that rely on session cookies."""
+
+        if request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
+            return None
+        origin = (request.headers.get("origin") or "").rstrip("/")
+        if not origin:
+            return None
+        forwarded_proto = request.headers.get("x-forwarded-proto")
+        forwarded_host = request.headers.get("x-forwarded-host")
+        trust_forwarded = os.getenv("TRUST_X_FORWARDED_FOR", "false").lower() == "true"
+        if trust_forwarded and forwarded_proto and forwarded_host:
+            expected_origin = f"{forwarded_proto.split(',')[0].strip()}://{forwarded_host.split(',')[0].strip()}"
+        else:
+            expected_origin = f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
+        if origin == expected_origin.rstrip("/"):
+            return None
+        return JSONResponse(
+            status_code=403,
+            content={"error": "invalid_origin", "message": "Cross-origin mutation rejected"},
+        )
 
 
 def add_auth_middleware(app):

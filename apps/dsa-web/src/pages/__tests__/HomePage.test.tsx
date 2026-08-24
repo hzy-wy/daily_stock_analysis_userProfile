@@ -1186,7 +1186,7 @@ describe('HomePage', () => {
     const taskRefreshCallsBeforeSubmit = vi.mocked(analysisApi.getTasks).mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: '分析全部' }));
 
-    expect(await screen.findByText('已提交 51 个任务，0 个正在运行')).toBeInTheDocument();
+    expect(await screen.findByText('已提交 51 个新任务；另有 0 个任务此前已在运行')).toBeInTheDocument();
     expect(analysisApi.analyzeAsync).toHaveBeenCalledTimes(2);
     expect(vi.mocked(analysisApi.analyzeAsync).mock.calls[0]?.[0].stockCodes).toHaveLength(50);
     expect(vi.mocked(analysisApi.analyzeAsync).mock.calls[1]?.[0].stockCodes).toHaveLength(1);
@@ -1221,7 +1221,7 @@ describe('HomePage', () => {
     const taskRefreshCallsBeforeSubmit = vi.mocked(analysisApi.getTasks).mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: '分析全部' }));
 
-    const status = await screen.findByText(/已确认提交 45 个任务，5 个正在运行；另有 1 只未确认/);
+    const status = await screen.findByText(/已确认提交 45 个新任务；另有 5 个任务此前已在运行。还有 1 只未确认/);
     expect(status).toHaveTextContent('已停止后续提交并刷新任务列表');
     expect(status).toHaveTextContent('服务端访问外部依赖时超时');
     expect(analysisApi.analyzeAsync).toHaveBeenCalledTimes(2);
@@ -1250,7 +1250,7 @@ describe('HomePage', () => {
     const taskRefreshCallsBeforeSubmit = vi.mocked(analysisApi.getTasks).mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: '分析全部' }));
 
-    const status = await screen.findByText(/已确认提交 40 个任务，0 个正在运行；另有 11 只未确认/);
+    const status = await screen.findByText(/已确认提交 40 个新任务；另有 0 个任务此前已在运行。还有 11 只未确认/);
     expect(status).toHaveTextContent('本组请求 50 只，仅确认 40 只');
     expect(analysisApi.analyzeAsync).toHaveBeenCalledTimes(1);
     expect(vi.mocked(analysisApi.getTasks).mock.calls.length).toBeGreaterThan(taskRefreshCallsBeforeSubmit);
@@ -1291,7 +1291,7 @@ describe('HomePage', () => {
     fireEvent.click(await screen.findByRole('button', { name: '自选' }));
     fireEvent.click(screen.getByRole('button', { name: '分析全部' }));
 
-    expect(await screen.findByText('已提交 0 个任务，1 个正在运行')).toBeInTheDocument();
+    expect(await screen.findByText('已提交 0 个新任务；另有 1 个任务此前已在运行')).toBeInTheDocument();
     expect(analysisApi.analyzeAsync).toHaveBeenCalledTimes(1);
   });
 

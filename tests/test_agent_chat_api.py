@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from api.v1.endpoints import agent as agent_endpoint
 from src.config import Config
+from src.request_context import reset_actor_context, set_actor_context
 from src.storage import DatabaseManager
 
 
@@ -374,6 +375,38 @@ def test_codex_stop_rejects_unknown_or_finished_request() -> None:
     with pytest.raises(Exception) as exc_info:
         asyncio.run(agent_endpoint.cancel_agent_chat_stream("missing-request"))
     assert getattr(exc_info.value, "status_code", None) == 404
+
+
+def test_codex_stop_is_scoped_to_the_authenticated_owner(monkeypatch) -> None:
+    monkeypatch.setenv("AUTH_MODE", "multi_user")
+    cancel_event = threading.Event()
+    stream_key = ("user-a", "shared-request-id")
+    with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
+        agent_endpoint._ACTIVE_CODEX_STREAMS[stream_key] = cancel_event
+    try:
+        user_b_tokens = set_actor_context("user-b", "user")
+        try:
+            with pytest.raises(Exception) as exc_info:
+                asyncio.run(agent_endpoint.cancel_agent_chat_stream("shared-request-id"))
+            assert getattr(exc_info.value, "status_code", None) == 404
+            assert not cancel_event.is_set()
+        finally:
+            reset_actor_context(user_b_tokens)
+
+        user_a_tokens = set_actor_context("user-a", "user")
+        try:
+            assert asyncio.run(
+                agent_endpoint.cancel_agent_chat_stream("shared-request-id")
+            ) == {
+                "accepted": True,
+                "request_id": "shared-request-id",
+            }
+            assert cancel_event.is_set()
+        finally:
+            reset_actor_context(user_a_tokens)
+    finally:
+        with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
+            agent_endpoint._ACTIVE_CODEX_STREAMS.pop(stream_key, None)
 
 
 def test_litellm_stream_keeps_existing_execution_signature(tmp_path: Path) -> None:

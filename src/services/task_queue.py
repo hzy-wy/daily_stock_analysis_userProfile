@@ -87,6 +87,7 @@ class TaskInfo:
     report_language: Optional[str] = None
     trace_id: Optional[str] = None
     region: Optional[str] = None
+    owner_user_id: Optional[str] = None
     flow_events: List[Dict[str, Any]] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
@@ -137,6 +138,7 @@ class TaskInfo:
             report_language=self.report_language,
             trace_id=self.trace_id or self.task_id,
             region=self.region,
+            owner_user_id=self.owner_user_id,
             flow_events=copy.deepcopy(self.flow_events),
         )
 
@@ -191,6 +193,7 @@ class AnalysisTaskQueue:
         
         # SSE 订阅者列表（asyncio.Queue 实例）
         self._subscribers: List['AsyncQueue'] = []
+        self._subscriber_owners: Dict[int, Optional[str]] = {}
         self._subscribers_lock = threading.Lock()
         
         # 主事件循环引用（用于跨线程广播）
@@ -279,6 +282,18 @@ class AnalysisTaskQueue:
         return "applied"
     
     # ========== 任务提交与查询 ==========
+
+    @staticmethod
+    def _current_owner_user_id() -> Optional[str]:
+        from src.services.identity_service import current_user_scope
+
+        return current_user_scope()
+
+    @classmethod
+    def _scoped_dedupe_key(cls, stock_code: str, owner_user_id: Optional[str] = None) -> str:
+        normalized = _dedupe_stock_code_key(stock_code)
+        owner_user_id = owner_user_id if owner_user_id is not None else cls._current_owner_user_id()
+        return f"{owner_user_id}:{normalized}" if owner_user_id else normalized
     
     def is_analyzing(self, stock_code: str) -> bool:
         """
@@ -290,7 +305,7 @@ class AnalysisTaskQueue:
         Returns:
             True 表示正在分析中
         """
-        dedupe_key = _dedupe_stock_code_key(stock_code)
+        dedupe_key = self._scoped_dedupe_key(stock_code)
         with self._data_lock:
             return dedupe_key in self._analyzing_stocks
     
@@ -304,7 +319,7 @@ class AnalysisTaskQueue:
         Returns:
             任务 ID，如果没有则返回 None
         """
-        dedupe_key = _dedupe_stock_code_key(stock_code)
+        dedupe_key = self._scoped_dedupe_key(stock_code)
         with self._data_lock:
             return self._analyzing_stocks.get(dedupe_key)
 
@@ -408,10 +423,11 @@ class AnalysisTaskQueue:
             normalized for normalized in (resolve_index_stock_code_for_analysis(code) for code in stock_codes)
             if normalized
         ]
+        owner_user_id = self._current_owner_user_id()
 
         with self._data_lock:
             for stock_code in canonical_codes:
-                dedupe_key = _dedupe_stock_code_key(stock_code)
+                dedupe_key = self._scoped_dedupe_key(stock_code, owner_user_id)
                 if dedupe_key in self._analyzing_stocks:
                     existing_task_id = self._analyzing_stocks[dedupe_key]
                     duplicates.append(DuplicateTaskError(stock_code, existing_task_id))
@@ -434,13 +450,14 @@ class AnalysisTaskQueue:
                     portfolio_context=dict(portfolio_context) if isinstance(portfolio_context, dict) else None,
                     skills=task_skills,
                     report_language=report_language,
+                    owner_user_id=owner_user_id,
                 )
                 self._tasks[task_id] = task_info
                 self._analyzing_stocks[dedupe_key] = task_id
 
                 try:
                     future = self.executor.submit(
-                        self._execute_task,
+                        self._execute_task_as_owner,
                         task_id,
                         stock_code,
                         report_type,
@@ -495,6 +512,7 @@ class AnalysisTaskQueue:
             message=message,
             report_type=report_type,
             region=region,
+            owner_user_id=self._current_owner_user_id(),
         )
 
         with self._data_lock:
@@ -502,7 +520,11 @@ class AnalysisTaskQueue:
                 raise ValueError(f"任务 ID 已存在: {task_id}")
             self._tasks[task_id] = task_info
             try:
-                future = self.executor.submit(self._execute_background_task, task_id, run_task)
+                future = self.executor.submit(
+                    self._execute_background_task_as_owner,
+                    task_id,
+                    run_task,
+                )
             except Exception:
                 del self._tasks[task_id]
                 raise
@@ -521,7 +543,7 @@ class AnalysisTaskQueue:
 
             task = self._tasks.pop(task_id, None)
             if task:
-                dedupe_key = _dedupe_stock_code_key(task.stock_code)
+                dedupe_key = self._scoped_dedupe_key(task.stock_code, task.owner_user_id)
                 if self._analyzing_stocks.get(dedupe_key) == task_id:
                     del self._analyzing_stocks[dedupe_key]
     
@@ -537,6 +559,9 @@ class AnalysisTaskQueue:
         """
         with self._data_lock:
             task = self._tasks.get(task_id)
+            owner_user_id = self._current_owner_user_id()
+            if task and owner_user_id and task.owner_user_id != owner_user_id:
+                return None
             return task.copy() if task else None
 
     def append_task_flow_event(
@@ -557,6 +582,9 @@ class AnalysisTaskQueue:
 
         with self._data_lock:
             task = self._tasks.get(task_id)
+            owner_user_id = self._current_owner_user_id()
+            if task and owner_user_id and task.owner_user_id != owner_user_id:
+                return None
             if not task:
                 return None
             task.flow_events.append(event_payload)
@@ -573,6 +601,9 @@ class AnalysisTaskQueue:
         """Return a copy of the recent run-flow events for a task."""
         with self._data_lock:
             task = self._tasks.get(task_id)
+            owner_user_id = self._current_owner_user_id()
+            if task and owner_user_id and task.owner_user_id != owner_user_id:
+                return []
             if not task:
                 return []
             return copy.deepcopy(task.flow_events)
@@ -585,9 +616,11 @@ class AnalysisTaskQueue:
             任务列表（副本）
         """
         with self._data_lock:
+            owner_user_id = self._current_owner_user_id()
             return [
                 task.copy() for task in self._tasks.values()
                 if task.status in (TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.CANCEL_REQUESTED)
+                and (not owner_user_id or task.owner_user_id == owner_user_id)
             ]
     
     def list_all_tasks(self, limit: int = 50) -> List[TaskInfo]:
@@ -601,8 +634,12 @@ class AnalysisTaskQueue:
             任务列表（副本）
         """
         with self._data_lock:
+            owner_user_id = self._current_owner_user_id()
             tasks = sorted(
-                self._tasks.values(),
+                (
+                    task for task in self._tasks.values()
+                    if not owner_user_id or task.owner_user_id == owner_user_id
+                ),
                 key=lambda t: t.created_at,
                 reverse=True
             )
@@ -616,14 +653,19 @@ class AnalysisTaskQueue:
             统计信息字典
         """
         with self._data_lock:
+            owner_user_id = self._current_owner_user_id()
+            visible_tasks = [
+                task for task in self._tasks.values()
+                if not owner_user_id or task.owner_user_id == owner_user_id
+            ]
             stats = {
-                "total": len(self._tasks),
+                "total": len(visible_tasks),
                 "pending": 0,
                 "processing": 0,
                 "completed": 0,
                 "failed": 0,
             }
-            for task in self._tasks.values():
+            for task in visible_tasks:
                 stats[task.status.value] = stats.get(task.status.value, 0) + 1
             return stats
 
@@ -664,6 +706,22 @@ class AnalysisTaskQueue:
         return task_snapshot
     
     # ========== 任务执行 ==========
+
+    def _execute_task_as_owner(
+        self,
+        task_id: str,
+        *args: Any,
+    ) -> Optional[Dict[str, Any]]:
+        from src.request_context import reset_actor_context, set_actor_context
+
+        with self._data_lock:
+            task = self._tasks.get(task_id)
+            owner_user_id = task.owner_user_id if task else None
+        tokens = set_actor_context(user_id=owner_user_id, actor_type="user")
+        try:
+            return self._execute_task(task_id, *args)
+        finally:
+            reset_actor_context(tokens)
     
     def _execute_task(
         self,
@@ -753,7 +811,7 @@ class AnalysisTaskQueue:
                         task.stock_name = result.get("stock_name", task.stock_name)
                         
                         # 从分析中集合移除
-                        dedupe_key = _dedupe_stock_code_key(task.stock_code)
+                        dedupe_key = self._scoped_dedupe_key(task.stock_code, task.owner_user_id)
                         if dedupe_key in self._analyzing_stocks:
                             del self._analyzing_stocks[dedupe_key]
                 
@@ -783,7 +841,7 @@ class AnalysisTaskQueue:
                     task.message = f"分析失败: {error_msg[:50]}"
                     
                     # 从分析中集合移除
-                    dedupe_key = _dedupe_stock_code_key(task.stock_code)
+                    dedupe_key = self._scoped_dedupe_key(task.stock_code, task.owner_user_id)
                     if dedupe_key in self._analyzing_stocks:
                         del self._analyzing_stocks[dedupe_key]
             
@@ -873,6 +931,22 @@ class AnalysisTaskQueue:
 
             self._cleanup_old_tasks()
             return None
+
+    def _execute_background_task_as_owner(
+        self,
+        task_id: str,
+        run_task: Callable[[], Optional[Dict[str, Any]]],
+    ) -> Optional[Dict[str, Any]]:
+        from src.request_context import reset_actor_context, set_actor_context
+
+        with self._data_lock:
+            task = self._tasks.get(task_id)
+            owner_user_id = task.owner_user_id if task else None
+        tokens = set_actor_context(user_id=owner_user_id, actor_type="user")
+        try:
+            return self._execute_background_task(task_id, run_task)
+        finally:
+            reset_actor_context(tokens)
     
     def _cleanup_old_tasks(self) -> int:
         """
@@ -919,6 +993,7 @@ class AnalysisTaskQueue:
         """
         with self._subscribers_lock:
             self._subscribers.append(queue)
+            self._subscriber_owners[id(queue)] = self._current_owner_user_id()
             # 捕获当前事件循环（应在主线程的 async 上下文中调用）
             try:
                 self._main_loop = asyncio.get_running_loop()
@@ -940,6 +1015,7 @@ class AnalysisTaskQueue:
         with self._subscribers_lock:
             if queue in self._subscribers:
                 self._subscribers.remove(queue)
+                self._subscriber_owners.pop(id(queue), None)
                 logger.debug(f"[TaskQueue] 订阅者离开，当前订阅者数: {len(self._subscribers)}")
     
     def _broadcast_event(self, event_type: str, data: Dict[str, Any]) -> None:
@@ -956,7 +1032,15 @@ class AnalysisTaskQueue:
         
         with self._subscribers_lock:
             subscribers = self._subscribers.copy()
+            subscriber_owners = dict(self._subscriber_owners)
             loop = self._main_loop
+
+        task_owner_user_id = None
+        task_id = data.get("task_id") if isinstance(data, dict) else None
+        if task_id:
+            with self._data_lock:
+                task = self._tasks.get(str(task_id))
+                task_owner_user_id = task.owner_user_id if task else None
         
         if not subscribers:
             return
@@ -966,6 +1050,9 @@ class AnalysisTaskQueue:
             return
         
         for queue in subscribers:
+            subscriber_owner = subscriber_owners.get(id(queue))
+            if subscriber_owner and subscriber_owner != task_owner_user_id:
+                continue
             try:
                 # 使用 call_soon_threadsafe 将事件放入 asyncio 队列
                 # 这是从工作线程向主事件循环发送消息的安全方式

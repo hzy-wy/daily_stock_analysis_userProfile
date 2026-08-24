@@ -1,14 +1,10 @@
 # -*- coding: utf-8 -*-
-"""
-Web admin authentication module.
-
-Single toggle (ADMIN_AUTH_ENABLED) + file-based credentials.
-First login sets initial password; supports web change-password and CLI reset.
-"""
+"""Legacy shared-password helpers and trusted multi-user identity CLI."""
 
 from __future__ import annotations
 
 import base64
+import argparse
 import getpass
 import hashlib
 import hmac
@@ -25,6 +21,8 @@ from dotenv import dotenv_values
 logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "dsa_session"
+APP_COOKIE_NAME = "dsa_app_sid"
+ADMIN_COOKIE_NAME = "dsa_admin_sid"
 PBKDF2_ITERATIONS = 100_000
 RATE_LIMIT_WINDOW_SEC = 300
 RATE_LIMIT_MAX_FAILURES = 5
@@ -69,6 +67,11 @@ def _get_credential_path() -> Path:
 def _is_auth_enabled_from_env() -> bool:
     """Read ADMIN_AUTH_ENABLED from .env file."""
     _ensure_env_loaded()
+    auth_mode = (os.getenv("AUTH_MODE") or "").strip().lower()
+    if auth_mode == "multi_user" or auth_mode == "legacy":
+        return True
+    if auth_mode == "disabled":
+        return False
     env_file = os.getenv("ENV_FILE")
     env_path = Path(env_file) if env_file else Path(__file__).resolve().parent.parent / ".env"
     if not env_path.exists():
@@ -462,6 +465,12 @@ def overwrite_password(new_password: str) -> Optional[str]:
 def reset_password_cli() -> int:
     """Interactive CLI to reset password. Returns exit code."""
     _ensure_env_loaded()
+    if (os.getenv("AUTH_MODE") or "").strip().lower() == "multi_user":
+        print(
+            "Error: use reset_user_password --username <login> in multi-user mode",
+            file=sys.stderr,
+        )
+        return 1
     if not _is_auth_enabled_from_env():
         print("Error: Auth is not enabled. Set ADMIN_AUTH_ENABLED=true in .env", file=sys.stderr)
         return 1
@@ -489,10 +498,76 @@ def reset_password_cli() -> int:
 
 
 def _main() -> int:
-    """CLI entry: reset_password subcommand."""
-    if len(sys.argv) > 1 and sys.argv[1] == "reset_password":
+    """CLI entry for legacy reset and trusted multi-user bootstrap."""
+    _ensure_env_loaded()
+    parser = argparse.ArgumentParser(prog="python -m src.auth")
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("reset_password", help="Reset the legacy single-admin password")
+    bootstrap_parser = subparsers.add_parser(
+        "bootstrap_owner",
+        help="Create the first multi-user platform owner from a trusted terminal",
+    )
+    bootstrap_parser.add_argument("--username", default="owner")
+    bootstrap_parser.add_argument("--display-name", default="Deployment Owner")
+    reset_user_parser = subparsers.add_parser(
+        "reset_user_password",
+        help="Reset a multi-user local password from a trusted terminal",
+    )
+    reset_user_parser.add_argument("--username", required=True)
+    args = parser.parse_args()
+
+    if args.command == "reset_password":
         return reset_password_cli()
-    print("Usage: python -m src.auth reset_password", file=sys.stderr)
+    if args.command == "bootstrap_owner":
+        from src.services.identity_service import IdentityError, get_identity_service
+
+        if (os.getenv("AUTH_MODE") or "").strip().lower() != "multi_user":
+            print("Error: set AUTH_MODE=multi_user before bootstrapping an owner", file=sys.stderr)
+            return 1
+        service = get_identity_service()
+        service.ensure_ready()
+        existing_owner_id = service.get_owner_user_id()
+        if existing_owner_id:
+            print(f"Platform owner is already available: {existing_owner_id}")
+            return 0
+        password = getpass.getpass("Owner password (will not echo): ")
+        confirm = getpass.getpass("Confirm owner password: ")
+        if password != confirm:
+            print("Error: Passwords do not match", file=sys.stderr)
+            return 1
+        try:
+            user = service.bootstrap_owner(
+                identifier=args.username,
+                password=password,
+                display_name=args.display_name,
+            )
+        except IdentityError as exc:
+            print(f"Error: {exc.message}", file=sys.stderr)
+            return 1
+        print(f"Platform owner created: {user['id']} ({args.username})")
+        return 0
+    if args.command == "reset_user_password":
+        from src.services.identity_service import IdentityError, get_identity_service
+
+        if (os.getenv("AUTH_MODE") or "").strip().lower() != "multi_user":
+            print("Error: reset_user_password requires AUTH_MODE=multi_user", file=sys.stderr)
+            return 1
+        password = getpass.getpass("New password (will not echo): ")
+        confirm = getpass.getpass("Confirm new password: ")
+        if password != confirm:
+            print("Error: Passwords do not match", file=sys.stderr)
+            return 1
+        try:
+            user = get_identity_service().reset_password_from_trusted_cli(
+                identifier=args.username,
+                new_password=password,
+            )
+        except IdentityError as exc:
+            print(f"Error: {exc.message}", file=sys.stderr)
+            return 1
+        print(f"Password reset and sessions revoked: {user['id']} ({args.username})")
+        return 0
+    parser.print_usage(sys.stderr)
     return 1
 
 

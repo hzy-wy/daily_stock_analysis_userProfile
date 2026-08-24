@@ -16,6 +16,8 @@ const HomePage = lazy(() => import('./pages/HomePage'));
 const BacktestPage = lazy(() => import('./pages/BacktestPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
+const AdminConsolePage = lazy(() => import('./pages/AdminConsolePage'));
+const InvitationAcceptPage = lazy(() => import('./pages/InvitationAcceptPage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const ChatPage = lazy(() => import('./pages/ChatPage'));
 const PortfolioPage = lazy(() => import('./pages/PortfolioPage'));
@@ -26,12 +28,28 @@ const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
 
 const AppContent: React.FC = () => {
   const location = useLocation();
-  const { authEnabled, loggedIn, isLoading, loadError, refreshStatus } = useAuth();
+  const { authEnabled, loggedIn, isLoading, loadError, refreshStatus, user } = useAuth();
   const { t } = useUiLanguage();
 
   useEffect(() => {
     useAgentChatStore.getState().setCurrentRoute(location.pathname);
   }, [location.pathname]);
+
+  if (location.pathname === '/admin' || location.pathname.startsWith('/admin/')) {
+    return (
+      <StandaloneRouteBoundary>
+        <AdminConsolePage />
+      </StandaloneRouteBoundary>
+    );
+  }
+
+  if (location.pathname === '/accept-invite') {
+    return (
+      <StandaloneRouteBoundary>
+        <InvitationAcceptPage />
+      </StandaloneRouteBoundary>
+    );
+  }
 
   if (isLoading) {
     return <PageLoadingFallback />;
@@ -70,6 +88,10 @@ const AppContent: React.FC = () => {
     return <Navigate to="/" replace />;
   }
 
+  const canConfigureSystem = !user
+    || user.permissions.includes('*')
+    || user.permissions.includes('system.configure');
+
   return (
     <Routes>
       <Route
@@ -87,7 +109,7 @@ const AppContent: React.FC = () => {
         <Route path="/backtest" element={<BacktestPage />} />
         <Route path="/alerts" element={<AlertsPage />} />
         <Route path="/usage" element={<TokenUsagePage />} />
-        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/settings" element={canConfigureSystem ? <SettingsPage /> : <Navigate to="/" replace />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

@@ -8,8 +8,6 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, select
-
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.config import get_config
 from src.core.backtest_engine import OVERALL_SENTINEL_CODE, BacktestEngine, EvaluationConfig
@@ -962,50 +960,40 @@ class BacktestService:
             logger.warning(f"补全日线数据失败({refill_code}): {exc}")
 
     def _recompute_summaries(self, *, touched_codes: List[str], eval_window_days: int, engine_version: str) -> None:
-        with self.db.get_session() as session:
-            # overall
-            overall_rows = session.execute(
-                select(BacktestResult).where(
-                    and_(
-                        BacktestResult.eval_window_days == eval_window_days,
-                        BacktestResult.engine_version == engine_version,
-                    )
-                )
-            ).scalars().all()
-            overall_data = BacktestEngine.compute_summary(
-                results=overall_rows,
-                scope="overall",
-                code=OVERALL_SENTINEL_CODE,
+        overall_rows = self.repo.list_results(
+            code=None,
+            eval_window_days=eval_window_days,
+            engine_version=engine_version,
+        )
+        overall_data = BacktestEngine.compute_summary(
+            results=overall_rows,
+            scope="overall",
+            code=OVERALL_SENTINEL_CODE,
+            eval_window_days=eval_window_days,
+            engine_version=engine_version,
+        )
+        overall_summary = self._build_summary_model(overall_data)
+        self.repo.upsert_summary(overall_summary)
+
+        for code in touched_codes:
+            normalized_code = self._normalize_summary_code(code)
+            if not normalized_code:
+                continue
+
+            rows = self.repo.list_results(
+                code=normalized_code,
                 eval_window_days=eval_window_days,
                 engine_version=engine_version,
             )
-            overall_summary = self._build_summary_model(overall_data)
-            self.repo.upsert_summary(overall_summary)
-
-            for code in touched_codes:
-                normalized_code = self._normalize_summary_code(code)
-                if not normalized_code:
-                    continue
-
-                code_conditions = BacktestRepository._build_code_conditions(BacktestResult.code, normalized_code)
-                rows = session.execute(
-                    select(BacktestResult).where(
-                        and_(
-                            *code_conditions,
-                            BacktestResult.eval_window_days == eval_window_days,
-                            BacktestResult.engine_version == engine_version,
-                        )
-                    )
-                ).scalars().all()
-                data = BacktestEngine.compute_summary(
-                    results=rows,
-                    scope="stock",
-                    code=normalized_code,
-                    eval_window_days=eval_window_days,
-                    engine_version=engine_version,
-                )
-                summary = self._build_summary_model(data)
-                self.repo.upsert_summary(summary)
+            data = BacktestEngine.compute_summary(
+                results=rows,
+                scope="stock",
+                code=normalized_code,
+                eval_window_days=eval_window_days,
+                engine_version=engine_version,
+            )
+            summary = self._build_summary_model(data)
+            self.repo.upsert_summary(summary)
 
     @staticmethod
     def _build_summary_model(summary_data: Dict[str, Any]) -> BacktestSummary:

@@ -10,15 +10,16 @@ API 依赖注入模块
 3. 提供服务层依赖
 """
 
-from typing import Generator
+from typing import Callable, Generator
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
 from src.storage import DatabaseManager
 from src.config import get_config, Config
 from src.services.system_config_service import SystemConfigService
 from src.services.runtime_scheduler import RuntimeSchedulerService
+from src.services.identity_service import Principal
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -79,3 +80,33 @@ def get_runtime_scheduler_service(request: Request) -> RuntimeSchedulerService:
         service = RuntimeSchedulerService()
         request.app.state.runtime_scheduler_service = service
     return service
+
+
+def get_current_principal(request: Request) -> Principal:
+    """Return the authenticated multi-user principal bound by middleware."""
+
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "unauthorized", "message": "Login required"},
+        )
+    return principal
+
+
+def require_permission(permission: str) -> Callable[[Request], Principal]:
+    """Build a FastAPI dependency for one atomic permission."""
+
+    def dependency(request: Request) -> Principal:
+        principal = get_current_principal(request)
+        if not principal.has_permission(permission):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "forbidden",
+                    "message": "You do not have permission to perform this operation",
+                },
+            )
+        return principal
+
+    return dependency

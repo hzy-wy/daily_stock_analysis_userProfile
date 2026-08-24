@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from api.deps import get_system_config_service
 from src.auth import (
+    APP_COOKIE_NAME,
     COOKIE_NAME,
     SESSION_MAX_AGE_HOURS_DEFAULT,
     change_password,
@@ -33,6 +34,14 @@ from src.auth import (
 )
 from src.config import Config, setup_env
 from src.core.config_manager import ConfigManager
+from src.services.identity_service import (
+    APP_AUDIENCE,
+    AuthenticationError,
+    AuthorizationError,
+    IdentityError,
+    get_identity_service,
+    is_multi_user_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +53,8 @@ class LoginRequest(BaseModel):
 
     model_config = {"populate_by_name": True}
 
-    password: str = Field(default="", description="Admin password")
+    identifier: str = Field(default="", description="Username or email in multi-user mode")
+    password: str = Field(default="", description="Password")
     password_confirm: str | None = Field(default=None, alias="passwordConfirm", description="Confirm (first-time)")
 
 
@@ -67,6 +77,17 @@ class AuthSettingsRequest(BaseModel):
     password: str = Field(default="")
     password_confirm: str | None = Field(default=None, alias="passwordConfirm")
     current_password: str = Field(default="", alias="currentPassword")
+
+
+class InvitationAcceptRequest(BaseModel):
+    """Accept an administrator-issued private deployment invitation."""
+
+    model_config = {"populate_by_name": True}
+
+    token: str = Field(min_length=1, max_length=512)
+    display_name: str = Field(default="", alias="displayName", max_length=100)
+    password: str = Field(min_length=1, max_length=1024)
+    password_confirm: str = Field(alias="passwordConfirm", min_length=1, max_length=1024)
 
 
 def _cookie_params(request: Request) -> dict:
@@ -189,6 +210,31 @@ def _get_auth_status_dict(request: Request | None = None) -> dict:
 )
 async def auth_status(request: Request):
     """Return authEnabled, loggedIn, passwordSet, passwordChangeable, setupState without requiring auth."""
+    if is_multi_user_mode():
+        service = get_identity_service()
+        service.ensure_ready()
+        owner_exists = service.has_owner()
+        token = request.cookies.get(APP_COOKIE_NAME)
+        principal = service.principal_from_token(token or "", APP_AUDIENCE) if owner_exists else None
+        return {
+            "authEnabled": True,
+            "authMode": "multi_user",
+            "loggedIn": principal is not None,
+            "passwordSet": owner_exists,
+            "passwordChangeable": principal is not None,
+            "setupState": "enabled" if owner_exists else "bootstrap_required",
+            "setupRequired": not owner_exists,
+            "user": (
+                {
+                    "id": principal.user_id,
+                    "displayName": principal.display_name,
+                    "roles": sorted(principal.roles),
+                    "permissions": sorted(principal.permissions),
+                }
+                if principal
+                else None
+            ),
+        }
     return _get_auth_status_dict(request)
 
 
@@ -203,6 +249,14 @@ async def auth_status(request: Request):
 )
 async def auth_update_settings(request: Request, body: AuthSettingsRequest):
     """Manage auth enablement from the settings page."""
+    if is_multi_user_mode():
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "auth_mode_managed",
+                "message": "多用户认证模式由 AUTH_MODE 配置管理，不能从网页关闭",
+            },
+        )
     target_enabled = body.auth_enabled
     current_enabled = is_auth_enabled()
     stored_password_exists = has_stored_password()
@@ -361,6 +415,63 @@ async def auth_update_settings(request: Request, body: AuthSettingsRequest):
 )
 async def auth_login(request: Request, body: LoginRequest):
     """Verify password or set initial password, set cookie on success. Returns 401 or 429 on failure."""
+    if is_multi_user_mode():
+        service = get_identity_service()
+        service.ensure_ready()
+        if not service.has_owner():
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "bootstrap_required",
+                    "message": "请先在受信任终端执行 python -m src.auth bootstrap_owner --username owner",
+                },
+            )
+        try:
+            token, principal = service.authenticate(
+                identifier=body.identifier,
+                password=body.password,
+                audience=APP_AUDIENCE,
+                ip_address=get_client_ip(request),
+                user_agent=request.headers.get("user-agent"),
+            )
+        except AuthenticationError as exc:
+            status_code = 429 if exc.code == "rate_limited" else 401
+            return JSONResponse(
+                status_code=status_code,
+                content={"error": exc.code, "message": exc.message},
+            )
+        except AuthorizationError as exc:
+            return JSONResponse(
+                status_code=403,
+                content={"error": exc.code, "message": exc.message},
+            )
+        response = JSONResponse(
+            content={
+                "ok": True,
+                "user": {
+                    "id": principal.user_id,
+                    "displayName": principal.display_name,
+                    "roles": sorted(principal.roles),
+                    "permissions": sorted(principal.permissions),
+                },
+            }
+        )
+        params = _cookie_params(request)
+        try:
+            max_age_hours = int(os.getenv("USER_SESSION_MAX_AGE_HOURS", "24"))
+        except ValueError:
+            max_age_hours = 24
+        response.set_cookie(
+            key=APP_COOKIE_NAME,
+            value=token,
+            httponly=True,
+            samesite="lax",
+            secure=params["secure"],
+            path="/",
+            max_age=max(1, max_age_hours) * 3600,
+        )
+        return response
+
     if not is_auth_enabled():
         return JSONResponse(
             status_code=400,
@@ -428,8 +539,34 @@ async def auth_login(request: Request, body: LoginRequest):
     summary="Change password",
     description="Change password. Requires valid session.",
 )
-async def auth_change_password(body: ChangePasswordRequest):
+async def auth_change_password(body: ChangePasswordRequest, request: Request = None):
     """Change password. Requires login."""
+    if is_multi_user_mode():
+        principal = getattr(getattr(request, "state", None), "principal", None)
+        if principal is None:
+            return JSONResponse(
+                status_code=401,
+                content={"error": "unauthorized", "message": "Login required"},
+            )
+        new_pwd = body.new_password or ""
+        if new_pwd != (body.new_password_confirm or ""):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "password_mismatch", "message": "两次输入的新密码不一致"},
+            )
+        try:
+            get_identity_service().change_password(
+                principal=principal,
+                current_password=body.current_password or "",
+                new_password=new_pwd,
+            )
+        except IdentityError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": exc.code, "message": exc.message},
+            )
+        return Response(status_code=204)
+
     if not is_password_changeable():
         return JSONResponse(
             status_code=400,
@@ -467,6 +604,15 @@ async def auth_change_password(body: ChangePasswordRequest):
 )
 async def auth_logout(request: Request):
     """Clear session cookie."""
+    if is_multi_user_mode():
+        get_identity_service().revoke_session(
+            request.cookies.get(APP_COOKIE_NAME, ""),
+            APP_AUDIENCE,
+            reason="logout",
+        )
+        response = Response(status_code=204)
+        response.delete_cookie(key=APP_COOKIE_NAME, path="/")
+        return response
     if is_auth_enabled() and not rotate_session_secret():
         return JSONResponse(
             status_code=500,
@@ -475,3 +621,34 @@ async def auth_logout(request: Request):
     resp = Response(status_code=204)
     resp.delete_cookie(key=COOKIE_NAME, path="/")
     return resp
+
+
+@router.post(
+    "/invitations/accept",
+    summary="Accept a private deployment invitation",
+)
+async def accept_invitation(body: InvitationAcceptRequest):
+    """Create one member account from a one-time invitation token."""
+
+    if not is_multi_user_mode():
+        return JSONResponse(
+            status_code=404,
+            content={"error": "not_found", "message": "Invitation login is not enabled"},
+        )
+    if body.password != body.password_confirm:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "password_mismatch", "message": "两次输入的密码不一致"},
+        )
+    try:
+        user = get_identity_service().accept_invitation(
+            token=body.token,
+            password=body.password,
+            display_name=body.display_name,
+        )
+    except IdentityError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"error": exc.code, "message": exc.message},
+        )
+    return {"ok": True, "user": user}

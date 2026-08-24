@@ -26,9 +26,31 @@ class AlertRepository:
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
 
+    @staticmethod
+    def _current_owner_user_id() -> Optional[str]:
+        from src.services.identity_service import current_user_scope
+
+        return current_user_scope()
+
+    @staticmethod
+    def _persistence_owner_user_id() -> Optional[str]:
+        from src.services.identity_service import persistence_owner_user_id
+
+        return persistence_owner_user_id()
+
+    @classmethod
+    def _rule_conditions(cls, *conditions: Any) -> List[Any]:
+        scoped = list(conditions)
+        owner_user_id = cls._current_owner_user_id()
+        if owner_user_id:
+            scoped.append(AlertRuleRecord.owner_user_id == owner_user_id)
+        return scoped
+
     def create_rule(self, fields: Dict[str, Any]) -> AlertRuleRecord:
         with self.db.get_session() as session:
-            row = AlertRuleRecord(**fields)
+            values = dict(fields)
+            values["owner_user_id"] = self._persistence_owner_user_id()
+            row = AlertRuleRecord(**values)
             session.add(row)
             session.commit()
             session.refresh(row)
@@ -36,14 +58,16 @@ class AlertRepository:
 
     def get_rule(self, rule_id: int) -> Optional[AlertRuleRecord]:
         with self.db.get_session() as session:
+            conditions = self._rule_conditions(AlertRuleRecord.id == rule_id)
             return session.execute(
-                select(AlertRuleRecord).where(AlertRuleRecord.id == rule_id).limit(1)
+                select(AlertRuleRecord).where(and_(*conditions)).limit(1)
             ).scalar_one_or_none()
 
     def update_rule(self, rule_id: int, fields: Dict[str, Any]) -> Optional[AlertRuleRecord]:
         with self.db.get_session() as session:
+            conditions = self._rule_conditions(AlertRuleRecord.id == rule_id)
             row = session.execute(
-                select(AlertRuleRecord).where(AlertRuleRecord.id == rule_id).limit(1)
+                select(AlertRuleRecord).where(and_(*conditions)).limit(1)
             ).scalar_one_or_none()
             if row is None:
                 return None
@@ -56,7 +80,8 @@ class AlertRepository:
 
     def delete_rule(self, rule_id: int) -> bool:
         with self.db.get_session() as session:
-            result = session.execute(delete(AlertRuleRecord).where(AlertRuleRecord.id == rule_id))
+            conditions = self._rule_conditions(AlertRuleRecord.id == rule_id)
+            result = session.execute(delete(AlertRuleRecord).where(and_(*conditions)))
             session.commit()
             return bool(result.rowcount)
 
@@ -72,6 +97,7 @@ class AlertRepository:
         page_size: int = 20,
     ) -> Tuple[List[AlertRuleRecord], int]:
         conditions = []
+        conditions = self._rule_conditions(*conditions)
         if enabled is not None:
             conditions.append(AlertRuleRecord.enabled.is_(enabled))
         if alert_type:
@@ -101,9 +127,10 @@ class AlertRepository:
     def list_enabled_rules(self, *, limit: int = 1000) -> List[AlertRuleRecord]:
         safe_limit = max(1, min(int(limit), 1000))
         with self.db.get_session() as session:
+            conditions = self._rule_conditions(AlertRuleRecord.enabled.is_(True))
             rows = session.execute(
                 select(AlertRuleRecord)
-                .where(AlertRuleRecord.enabled.is_(True))
+                .where(and_(*conditions))
                 .order_by(desc(AlertRuleRecord.updated_at), desc(AlertRuleRecord.id))
                 .limit(safe_limit)
             ).scalars().all()
@@ -270,6 +297,7 @@ class AlertRepository:
         page_size: int = 20,
     ) -> Tuple[List[AlertTriggerRecord], int]:
         conditions = []
+        owner_user_id = self._current_owner_user_id()
         if rule_id is not None:
             conditions.append(AlertTriggerRecord.rule_id == rule_id)
         if target:
@@ -280,11 +308,22 @@ class AlertRepository:
         where_clause = and_(*conditions) if conditions else True
         offset = (page - 1) * page_size
         with self.db.get_session() as session:
+            trigger_query = select(AlertTriggerRecord)
+            count_query = select(func.count(AlertTriggerRecord.id)).select_from(AlertTriggerRecord)
+            if owner_user_id:
+                trigger_query = trigger_query.join(
+                    AlertRuleRecord, AlertTriggerRecord.rule_id == AlertRuleRecord.id
+                )
+                count_query = count_query.join(
+                    AlertRuleRecord, AlertTriggerRecord.rule_id == AlertRuleRecord.id
+                )
+                conditions.append(AlertRuleRecord.owner_user_id == owner_user_id)
+            where_clause = and_(*conditions) if conditions else True
             total = session.execute(
-                select(func.count(AlertTriggerRecord.id)).select_from(AlertTriggerRecord).where(where_clause)
+                count_query.where(where_clause)
             ).scalar() or 0
             rows = session.execute(
-                select(AlertTriggerRecord)
+                trigger_query
                 .where(where_clause)
                 .order_by(desc(AlertTriggerRecord.triggered_at), desc(AlertTriggerRecord.id))
                 .offset(offset)
@@ -302,6 +341,7 @@ class AlertRepository:
         page_size: int = 20,
     ) -> Tuple[List[AlertNotificationRecord], int]:
         conditions = []
+        owner_user_id = self._current_owner_user_id()
         if trigger_id is not None:
             conditions.append(AlertNotificationRecord.trigger_id == trigger_id)
         if channel:
@@ -312,13 +352,26 @@ class AlertRepository:
         where_clause = and_(*conditions) if conditions else True
         offset = (page - 1) * page_size
         with self.db.get_session() as session:
+            notification_query = select(AlertNotificationRecord)
+            count_query = select(func.count(AlertNotificationRecord.id)).select_from(AlertNotificationRecord)
+            if owner_user_id:
+                notification_query = (
+                    notification_query
+                    .join(AlertTriggerRecord, AlertNotificationRecord.trigger_id == AlertTriggerRecord.id)
+                    .join(AlertRuleRecord, AlertTriggerRecord.rule_id == AlertRuleRecord.id)
+                )
+                count_query = (
+                    count_query
+                    .join(AlertTriggerRecord, AlertNotificationRecord.trigger_id == AlertTriggerRecord.id)
+                    .join(AlertRuleRecord, AlertTriggerRecord.rule_id == AlertRuleRecord.id)
+                )
+                conditions.append(AlertRuleRecord.owner_user_id == owner_user_id)
+            where_clause = and_(*conditions) if conditions else True
             total = session.execute(
-                select(func.count(AlertNotificationRecord.id))
-                .select_from(AlertNotificationRecord)
-                .where(where_clause)
+                count_query.where(where_clause)
             ).scalar() or 0
             rows = session.execute(
-                select(AlertNotificationRecord)
+                notification_query
                 .where(where_clause)
                 .order_by(desc(AlertNotificationRecord.created_at), desc(AlertNotificationRecord.id))
                 .offset(offset)

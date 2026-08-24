@@ -21,3 +21,14 @@ def split_stock_list(value: str) -> List[str]:
 def serialize_stock_list(value: str) -> str:
     """Return STOCK_LIST in the canonical comma-separated storage form."""
     return ",".join(split_stock_list(value))
+
+
+def watchlist_match_key(value: str) -> str:
+    """Return the canonical identity key shared by legacy and user watchlists."""
+
+    from data_provider.base import normalize_stock_code
+
+    normalized = normalize_stock_code((value or "").strip())
+    if re.fullmatch(r"\d{5}", normalized):
+        return f"HK{normalized}"
+    return normalized.upper()

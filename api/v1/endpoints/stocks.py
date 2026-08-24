@@ -40,9 +40,11 @@ from src.services.import_parser import (
     parse_import_from_text,
 )
 from src.services.stock_service import StockService
-from src.services.stock_list_parser import split_stock_list
+from src.services.stock_list_parser import split_stock_list, watchlist_match_key
 from src.services.market_light_service import build_market_dashboard, normalize_market_region
 from src.services.system_config_service import SystemConfigService
+from src.services.identity_service import is_multi_user_mode
+from src.repositories.watchlist_repo import UserWatchlistRepository
 from data_provider.base import normalize_stock_code
 
 logger = logging.getLogger(__name__)
@@ -114,10 +116,7 @@ def _validate_and_normalize_stock_code(code: str) -> str:
 
 def _watchlist_match_key(code: str) -> str:
     """Return the equivalence key used for watchlist add/remove matching."""
-    normalized = normalize_stock_code(code.strip())
-    if re.fullmatch(r"\d{5}", normalized):
-        return f"HK{normalized}"
-    return normalized.upper()
+    return watchlist_match_key(code)
 
 
 @router.post(
@@ -354,7 +353,11 @@ def get_watchlist(
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> WatchlistResponse:
     try:
-        codes = _read_watchlist_codes(service)
+        codes = (
+            UserWatchlistRepository().list_codes()
+            if is_multi_user_mode()
+            else _read_watchlist_codes(service)
+        )
         return WatchlistResponse(stock_codes=codes, message=f"当前自选 {len(codes)} 只股票")
     except Exception as e:
         logger.error(f"获取自选队列失败: {e}", exc_info=True)
@@ -381,6 +384,14 @@ def add_to_watchlist(
 ) -> WatchlistResponse:
     try:
         validated = _validate_and_normalize_stock_code(request.stock_code)
+        if is_multi_user_mode():
+            repository = UserWatchlistRepository()
+            repository.add(
+                normalized_code=_watchlist_match_key(validated),
+                display_code=request.stock_code.strip(),
+            )
+            codes = repository.list_codes()
+            return WatchlistResponse(stock_codes=codes, message=f"已加入 {request.stock_code.strip()}")
         codes = _read_watchlist_codes(service)
         existing_keys = [_watchlist_match_key(c) for c in codes]
         if _watchlist_match_key(validated) not in existing_keys:
@@ -414,6 +425,11 @@ def remove_from_watchlist(
 ) -> WatchlistResponse:
     try:
         validated = _validate_and_normalize_stock_code(request.stock_code)
+        if is_multi_user_mode():
+            repository = UserWatchlistRepository()
+            repository.remove(normalized_code=_watchlist_match_key(validated))
+            codes = repository.list_codes()
+            return WatchlistResponse(stock_codes=codes, message=f"已移除 {request.stock_code.strip()}")
         codes = _read_watchlist_codes(service)
         existing_keys = [_watchlist_match_key(c) for c in codes]
         requested_key = _watchlist_match_key(validated)

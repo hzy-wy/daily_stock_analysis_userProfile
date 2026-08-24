@@ -36,7 +36,7 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNavigate, variant = 'default' }) => {
-  const { authEnabled, logout } = useAuth();
+  const { authEnabled, logout, user } = useAuth();
   const { t } = useUiLanguage();
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showAlphaSiftNav, setShowAlphaSiftNav] = useState(false);
@@ -68,7 +68,15 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
     };
   }, []);
 
-  const navItems = showAlphaSiftNav ? NAV_ITEMS : NAV_ITEMS.filter((item) => item.key !== 'screening');
+  const canConfigureSystem = !user
+    || user.permissions.includes('*')
+    || user.permissions.includes('system.configure');
+  const visibleNavItems = canConfigureSystem
+    ? NAV_ITEMS
+    : NAV_ITEMS.filter((item) => item.key !== 'settings');
+  const navItems = showAlphaSiftNav
+    ? visibleNavItems
+    : visibleNavItems.filter((item) => item.key !== 'screening');
   const isRail = variant === 'rail';
   const itemBaseClass = cn(
     'app-nav-item group relative flex h-[var(--nav-item-height)] w-full items-center overflow-hidden rounded-2xl border border-transparent text-sm leading-none text-secondary-text transition-all',

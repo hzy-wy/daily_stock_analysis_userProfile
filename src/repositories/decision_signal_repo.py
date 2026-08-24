@@ -59,8 +59,28 @@ class DecisionSignalRepository:
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
 
+    @staticmethod
+    def _current_owner_user_id() -> Optional[str]:
+        from src.services.identity_service import current_user_scope
+
+        return current_user_scope()
+
+    @staticmethod
+    def _persistence_owner_user_id() -> Optional[str]:
+        from src.services.identity_service import persistence_owner_user_id
+
+        return persistence_owner_user_id()
+
+    @classmethod
+    def _append_owner_scope(cls, conditions: List[Any]) -> List[Any]:
+        owner_user_id = cls._current_owner_user_id()
+        if owner_user_id:
+            conditions.append(DecisionSignalRecord.owner_user_id == owner_user_id)
+        return conditions
+
     def create(self, fields: Dict[str, Any]) -> DecisionSignalRecord:
         fields = self._normalize_datetime_fields(fields)
+        fields["owner_user_id"] = self._persistence_owner_user_id()
         with self.db.get_session() as session:
             row = DecisionSignalRecord(**fields)
             session.add(row)
@@ -76,6 +96,7 @@ class DecisionSignalRepository:
     ) -> DecisionSignalCreateResult:
         self.expire_due_signals()
         fields = self._normalize_datetime_fields(fields)
+        fields["owner_user_id"] = self._persistence_owner_user_id()
         with self.db.get_session() as session:
             existing = self._find_existing_in_session(session=session, fields=fields)
             if existing is not None:
@@ -152,8 +173,9 @@ class DecisionSignalRepository:
     def get(self, signal_id: int) -> Optional[DecisionSignalRecord]:
         self.expire_due_signals()
         with self.db.get_session() as session:
+            conditions = self._append_owner_scope([DecisionSignalRecord.id == signal_id])
             return session.execute(
-                select(DecisionSignalRecord).where(DecisionSignalRecord.id == signal_id).limit(1)
+                select(DecisionSignalRecord).where(and_(*conditions)).limit(1)
             ).scalar_one_or_none()
 
     def list(
@@ -199,6 +221,7 @@ class DecisionSignalRepository:
             expires_from=expires_from,
             expires_to=expires_to,
         )
+        self._append_owner_scope(conditions)
         where_clause = and_(*conditions) if conditions else True
         safe_page = max(1, int(page))
         safe_page_size = max(1, min(int(page_size), 100))
@@ -232,6 +255,7 @@ class DecisionSignalRepository:
             DecisionSignalRecord.status == "active",
             DecisionSignalRecord.stock_code.in_(stock_codes),
         ]
+        self._append_owner_scope(conditions)
         if market:
             conditions.append(DecisionSignalRecord.market == market)
         with self.db.get_session() as session:
@@ -262,6 +286,7 @@ class DecisionSignalRepository:
             self._same_profile_condition(decision_profile),
             DecisionSignalRecord.action.in_(actions),
         ]
+        self._append_owner_scope(conditions)
         if exclude_signal_id is not None:
             conditions.append(DecisionSignalRecord.id != exclude_signal_id)
         with self.db.get_session() as session:
@@ -281,8 +306,9 @@ class DecisionSignalRepository:
         replace_metadata: bool = False,
     ) -> Optional[DecisionSignalRecord]:
         with self.db.get_session() as session:
+            conditions = self._append_owner_scope([DecisionSignalRecord.id == signal_id])
             row = session.execute(
-                select(DecisionSignalRecord).where(DecisionSignalRecord.id == signal_id).limit(1)
+                select(DecisionSignalRecord).where(and_(*conditions)).limit(1)
             ).scalar_one_or_none()
             if row is None:
                 return None
@@ -297,12 +323,14 @@ class DecisionSignalRepository:
     def expire_due_signals(self, now: Optional[datetime] = None) -> int:
         now_value = to_utc_naive_datetime(now) if now is not None else utc_naive_now()
         with self.db.get_session() as session:
+            conditions = [
+                DecisionSignalRecord.status == "active",
+                DecisionSignalRecord.expires_at.is_not(None),
+                DecisionSignalRecord.expires_at <= now_value,
+            ]
+            self._append_owner_scope(conditions)
             rows = session.execute(
-                select(DecisionSignalRecord).where(
-                    DecisionSignalRecord.status == "active",
-                    DecisionSignalRecord.expires_at.is_not(None),
-                    DecisionSignalRecord.expires_at <= now_value,
-                )
+                select(DecisionSignalRecord).where(and_(*conditions))
             ).scalars().all()
             for row in rows:
                 row.status = "expired"
@@ -378,6 +406,7 @@ class DecisionSignalRepository:
             ]
         else:
             return None
+        DecisionSignalRepository._append_owner_scope(conditions)
         return session.execute(
             select(DecisionSignalRecord)
             .where(and_(*conditions))
@@ -409,6 +438,8 @@ class DecisionSignalRepository:
             conditions.append(DecisionSignalRecord.source_report_id == source_report_id)
         else:
             conditions.append(DecisionSignalRecord.trace_id == trace_id)
+
+        cls._append_owner_scope(conditions)
 
         candidates = session.execute(
             select(DecisionSignalRecord)

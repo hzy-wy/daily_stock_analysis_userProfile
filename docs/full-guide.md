@@ -468,10 +468,15 @@ daily_stock_analysis/
 
 ### 其他配置
 
+multi_user 启用步骤：先设置 `AUTH_MODE=multi_user`，再在服务器受信任终端执行 `python -m src.auth bootstrap_owner --username owner`，随后分别使用 `/login`（产品工作台）和 `/admin/login`（管理后台）。管理员从后台生成邀请，受邀者通过 `/accept-invite?token=...` 设置自己的密码。数据库用户忘记密码时，在受信任终端执行 `python -m src.auth reset_user_password --username <登录名>`，成功后该用户全部既有 Session 会被吊销。上线前备份、全新/legacy/Docker 三种启用路径、代理安全、逐模块验收与回滚见[多用户登录与权限启用指南](multi-user-auth-deployment-guide.md)，产品和数据模型见[多用户身份、登录与权限体系 PRD](multi-user-auth-rbac-prd.md)。
+
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
-| `STOCK_LIST` | 自选股代码（逗号分隔） | - |
-| `ADMIN_AUTH_ENABLED` | Web 登录：设为 `true` 启用密码保护；首次访问在网页设置初始密码，可在「系统设置 > 修改密码」修改；忘记密码执行 `python -m src.auth reset_password`。Web 的 `.env` 备份导入导出仅在开启该开关后可用（桌面端不受此限制）。 | `false` |
+| `STOCK_LIST` | 系统定时分析股票代码（逗号分隔）。legacy/disabled 模式下也作为 Web 自选；multi_user 模式下 Web 自选改为用户级，升级时仅一次性复制给首任 Owner | - |
+| `AUTH_MODE` | 身份模式：`disabled` / `legacy` / `multi_user`。不配置时继续从 `ADMIN_AUTH_ENABLED` 推导，避免旧部署行为变化 | 未配置 |
+| `ADMIN_AUTH_ENABLED` | 旧版共享密码开关，仅在未显式配置 `AUTH_MODE` 时生效；legacy 模式忘记密码执行 `python -m src.auth reset_password` | `false` |
+| `USER_SESSION_MAX_AGE_HOURS` / `USER_SESSION_IDLE_MINUTES` | multi_user 普通工作台 Session 的绝对/空闲有效期 | `24` / `480` |
+| `ADMIN_SESSION_MAX_AGE_HOURS` / `ADMIN_SESSION_IDLE_MINUTES` | multi_user 管理后台 Session 的绝对/空闲有效期；与工作台 Cookie 互不覆盖 | `4` / `30` |
 | `TRUST_X_FORWARDED_FOR` | 单层可信反向代理部署时设为 `true`，取 `X-Forwarded-For` 最右值作为真实客户端 IP（用于登录限流等）；直连公网时保持 `false` 防伪造。多级代理/CDN 场景下限流 key 可能退化为边缘代理 IP，需额外评估 | `false` |
 | `MAX_WORKERS` | 并发线程数 | `3` |
 | `MARKET_REVIEW_ENABLED` | 启用大盘复盘 | `true` |

@@ -5,6 +5,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+from contextlib import closing
 from datetime import date
 from unittest.mock import patch
 
@@ -22,7 +23,7 @@ class TestStorage(unittest.TestCase):
 
     @staticmethod
     def _list_sqlite_indexes(db_path: str, table_name: str) -> dict[str, list[str]]:
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn:
             indexes = {}
             for row in conn.execute(f"PRAGMA index_list({table_name})").fetchall():
                 index_name = row[1]
@@ -37,7 +38,7 @@ class TestStorage(unittest.TestCase):
 
     @staticmethod
     def _list_sqlite_unique_indexes(db_path: str, table_name: str) -> dict[str, list[str]]:
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn:
             rows = conn.execute(f"PRAGMA index_list({table_name})").fetchall()
             unique_indexes = {}
             for row in rows:
@@ -57,7 +58,7 @@ class TestStorage(unittest.TestCase):
         db_path = os.path.join(temp_dir.name, "legacy_intel.sqlite")
 
         try:
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     """CREATE TABLE intelligence_sources (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,13 +138,82 @@ class TestStorage(unittest.TestCase):
                 unique_indexes_after["uix_intel_item_scope"],
                 ["source_id", "url", "scope_type", "scope_value", "market"],
             )
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 table_count = conn.execute("SELECT COUNT(*) FROM intelligence_items").fetchone()[0]
                 temp_tables = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'intelligence_items_recreate_tmp_%'"
                 ).fetchall()
 
             self.assertEqual(table_count, 2)
+            self.assertEqual(temp_tables, [])
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            temp_dir.cleanup()
+
+    def test_legacy_backtest_summary_unique_index_migrates_to_owner_scope(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        db_path = os.path.join(temp_dir.name, "legacy_backtest_summary.sqlite")
+
+        try:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+            DatabaseManager.reset_instance()
+
+            with closing(sqlite3.connect(db_path)) as conn, conn:
+                conn.execute(
+                    "DROP INDEX uix_backtest_summary_owner_scope_code_window_version"
+                )
+                conn.execute(
+                    """CREATE UNIQUE INDEX uix_backtest_summary_scope_code_window_version
+                    ON backtest_summaries(scope, code, eval_window_days, engine_version)"""
+                )
+                conn.execute(
+                    """INSERT INTO backtest_summaries (
+                    scope, code, eval_window_days, engine_version, total_evaluations
+                    ) VALUES ('stock', '600519', 10, 'legacy', 7)"""
+                )
+            conn.close()
+
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            unique_indexes = self._list_sqlite_unique_indexes(
+                db_path, "backtest_summaries"
+            )
+            self.assertNotIn(
+                "uix_backtest_summary_scope_code_window_version", unique_indexes
+            )
+            self.assertEqual(
+                unique_indexes[
+                    "uix_backtest_summary_owner_scope_code_window_version"
+                ],
+                [
+                    "owner_user_id",
+                    "scope",
+                    "code",
+                    "eval_window_days",
+                    "engine_version",
+                ],
+            )
+            self.assertEqual(
+                unique_indexes[
+                    "uix_backtest_summary_legacy_scope_code_window_version"
+                ],
+                ["scope", "code", "eval_window_days", "engine_version"],
+            )
+            with closing(sqlite3.connect(db_path)) as conn, conn:
+                migrated = conn.execute(
+                    """SELECT owner_user_id, total_evaluations
+                    FROM backtest_summaries WHERE engine_version = 'legacy'"""
+                ).fetchone()
+                temp_tables = conn.execute(
+                    """SELECT name FROM sqlite_master
+                    WHERE type='table' AND name LIKE 'backtest_summaries_recreate_tmp_%'"""
+                ).fetchall()
+            conn.close()
+
+            self.assertEqual(migrated, (None, 7))
             self.assertEqual(temp_tables, [])
         finally:
             DatabaseManager.reset_instance()
@@ -226,7 +296,7 @@ class TestStorage(unittest.TestCase):
         deeply_nested_json = "[" * 10_000 + "]" * 10_000
 
         try:
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     """CREATE TABLE decision_signals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -288,7 +358,7 @@ class TestStorage(unittest.TestCase):
             with self.assertLogs("src.storage", level="INFO") as logs:
                 DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(decision_signals)").fetchall()}
                 rows = conn.execute(
                     "SELECT id, decision_profile FROM decision_signals ORDER BY id"
@@ -365,7 +435,7 @@ class TestStorage(unittest.TestCase):
         db_path = os.path.join(temp_dir.name, "existing_decision_profile.db")
 
         try:
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     """CREATE TABLE decision_signals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -395,7 +465,7 @@ class TestStorage(unittest.TestCase):
             with self.assertLogs("src.storage", level="INFO") as logs:
                 DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 profiles = conn.execute(
                     "SELECT decision_profile FROM decision_signals ORDER BY id"
                 ).fetchall()
@@ -1090,8 +1160,8 @@ class TestStorage(unittest.TestCase):
 
             self.assertEqual(total, 1)
         finally:
-            temp_dir.cleanup()
             DatabaseManager.reset_instance()
+            temp_dir.cleanup()
 
 if __name__ == '__main__':
     unittest.main()

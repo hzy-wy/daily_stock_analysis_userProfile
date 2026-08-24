@@ -80,7 +80,7 @@ const NavigationLink: React.FC<NavigationLinkProps> = ({ item, mode, onNavigate 
 };
 
 export const CommandNavigation: React.FC = () => {
-  const { authEnabled, logout } = useAuth();
+  const { authEnabled, logout, user } = useAuth();
   const { t } = useUiLanguage();
   const location = useLocation();
   const desktopMenuRef = useRef<HTMLDivElement | null>(null);
@@ -147,7 +147,16 @@ export const CommandNavigation: React.FC = () => {
     [showAlphaSiftNav],
   );
   const dockItems = useMemo(() => primaryItems.slice(0, 4), [primaryItems]);
-  const isSecondaryRoute = SECONDARY_NAV_ITEMS.some((item) => location.pathname.startsWith(item.to));
+  const canConfigureSystem = !user
+    || user.permissions.includes('*')
+    || user.permissions.includes('system.configure');
+  const secondaryItems = useMemo(
+    () => canConfigureSystem
+      ? SECONDARY_NAV_ITEMS
+      : SECONDARY_NAV_ITEMS.filter((item) => item.key !== 'settings'),
+    [canConfigureSystem],
+  );
+  const isSecondaryRoute = secondaryItems.some((item) => location.pathname.startsWith(item.to));
   const closeMobileMenu = () => setMobileMenuOpen(false);
   const requestLogout = () => {
     setDesktopMenuOpen(false);
@@ -195,7 +204,7 @@ export const CommandNavigation: React.FC = () => {
                     <Sparkles className="h-3.5 w-3.5" />
                     {t('layout.workspaceTools')}
                   </div>
-                  {SECONDARY_NAV_ITEMS.map((item) => (
+                  {secondaryItems.map((item) => (
                     <NavigationLink
                       key={item.key}
                       item={item}
@@ -270,7 +279,7 @@ export const CommandNavigation: React.FC = () => {
             </div>
           </div>
           <nav className="command-drawer__links" aria-label={t('layout.navMenu')}>
-            {[...primaryItems, ...SECONDARY_NAV_ITEMS].map((item) => (
+            {[...primaryItems, ...secondaryItems].map((item) => (
               <NavigationLink key={item.key} item={item} mode="menu" onNavigate={closeMobileMenu} />
             ))}
           </nav>

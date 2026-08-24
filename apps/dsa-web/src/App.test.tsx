@@ -75,7 +75,9 @@ vi.mock('./pages/LoginPage', () => ({
 function makeAuthState(overrides: Partial<AuthState> = {}): AuthState {
   return {
     authEnabled: false,
+    authMode: 'disabled',
     loggedIn: false,
+    user: null,
     passwordSet: false,
     passwordChangeable: false,
     setupState: 'no_password',

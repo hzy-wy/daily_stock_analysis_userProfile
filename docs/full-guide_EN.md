@@ -392,9 +392,16 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 
 ### Other Configuration
 
+For private multi-user deployments, set `AUTH_MODE=multi_user`, then create the first owner from a trusted server terminal with `python -m src.auth bootstrap_owner --username owner`. The product workspace uses `/login`; the separate administrator session uses `/admin/login`. Administrators issue one-time invitations and users accept them at `/accept-invite?token=...`. If a database user loses their password, run `python -m src.auth reset_user_password --username <login>` from a trusted terminal; a successful reset revokes all existing sessions for that user. Follow the [multi-user deployment guide](multi-user-auth-deployment-guide_EN.md) for backup, fresh/legacy/Docker enablement, proxy hardening, module validation, and rollback; see the [multi-user identity and RBAC PRD](multi-user-auth-rbac-prd.md) for the product and data model.
+
 | Variable | Description | Default |
 |--------|------|--------|
-| `STOCK_LIST` | Watchlist codes (comma-separated) | - |
+| `STOCK_LIST` | System scheduler analysis scope. It is also the Web watchlist in disabled/legacy mode; multi-user Web watchlists are user-owned and the old value is copied to the first owner once | - |
+| `AUTH_MODE` | Identity mode: `disabled`, `legacy`, or `multi_user`. When omitted, behavior is derived from `ADMIN_AUTH_ENABLED` for backward compatibility | unset |
+| `ADMIN_AUTH_ENABLED` | Legacy shared-password switch, used only when `AUTH_MODE` is not explicit | `false` |
+| `USER_SESSION_MAX_AGE_HOURS` / `USER_SESSION_IDLE_MINUTES` | Multi-user workspace absolute and idle session limits | `24` / `480` |
+| `ADMIN_SESSION_MAX_AGE_HOURS` / `ADMIN_SESSION_IDLE_MINUTES` | Separate multi-user administrator absolute and idle session limits | `4` / `30` |
+| `TRUST_X_FORWARDED_FOR` | Trust forwarded client/protocol headers only behind a controlled reverse proxy | `false` |
 | `MAX_WORKERS` | Concurrent threads | `3` |
 | `MARKET_REVIEW_ENABLED` | Enable market review | `true` |
 | `DAILY_MARKET_CONTEXT_ENABLED` | Inject the daily market context into stock-analysis prompts and soften aggressive buy advice in high-risk/risk-off markets; enabled by default, and market review can still run when this is set to `false` | `true` |

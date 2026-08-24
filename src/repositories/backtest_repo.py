@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 
 from sqlalchemy import and_, delete, desc, func, or_, select
 
@@ -40,6 +40,53 @@ class BacktestRepository:
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
 
+    @staticmethod
+    def _data_owner_user_id() -> Optional[str]:
+        """Resolve the effective private-data owner for this operation.
+
+        Interactive requests use their authenticated actor.  In multi-user
+        mode, background jobs without an actor retain the deployment owner's
+        data scope; legacy mode remains unscoped for backwards compatibility.
+        """
+
+        from src.services.identity_service import persistence_owner_user_id
+
+        return persistence_owner_user_id()
+
+    @classmethod
+    def _append_history_owner_scope(cls, conditions: List[Any]) -> List[Any]:
+        owner_user_id = cls._data_owner_user_id()
+        if owner_user_id:
+            conditions.append(AnalysisHistory.owner_user_id == owner_user_id)
+        return conditions
+
+    @classmethod
+    def _validate_result_ownership(cls, session, results: Iterable[BacktestResult]) -> None:
+        """Reject writes that target another user's analysis history."""
+
+        owner_user_id = cls._data_owner_user_id()
+        if not owner_user_id:
+            return
+
+        analysis_ids = {
+            int(result.analysis_history_id)
+            for result in results
+            if result.analysis_history_id is not None
+        }
+        if not analysis_ids:
+            return
+
+        visible_ids = set(
+            session.execute(
+                select(AnalysisHistory.id).where(
+                    AnalysisHistory.id.in_(analysis_ids),
+                    AnalysisHistory.owner_user_id == owner_user_id,
+                )
+            ).scalars()
+        )
+        if visible_ids != analysis_ids:
+            raise ValueError("Backtest result references analysis history outside the current user scope")
+
     def get_candidates(
         self,
         *,
@@ -64,6 +111,7 @@ class BacktestRepository:
                     AnalysisHistory.report_type != MARKET_REVIEW_REPORT_TYPE,
                 )
             )
+            self._append_history_owner_scope(conditions)
 
             query = select(AnalysisHistory).where(and_(*conditions))
 
@@ -112,6 +160,7 @@ class BacktestRepository:
             ]
             if code:
                 conditions.extend(self._build_code_conditions(AnalysisHistory.code, code))
+            self._append_history_owner_scope(conditions)
 
             rows = session.execute(
                 select(BacktestResult, AnalysisHistory)
@@ -140,6 +189,7 @@ class BacktestRepository:
 
     def save_result(self, result: BacktestResult) -> None:
         with self.db.get_session() as session:
+            self._validate_result_ownership(session, [result])
             session.add(result)
             session.commit()
 
@@ -149,6 +199,7 @@ class BacktestRepository:
 
         with self.db.get_session() as session:
             try:
+                self._validate_result_ownership(session, results)
                 if replace_existing:
                     analysis_ids = sorted({r.analysis_history_id for r in results if r.analysis_history_id is not None})
                     key_pairs = sorted({(r.eval_window_days, r.engine_version) for r in results})
@@ -194,6 +245,7 @@ class BacktestRepository:
                 analysis_date_to=analysis_date_to,
                 days=days,
             )
+            self._append_history_owner_scope(conditions)
 
             where_clause = and_(*conditions) if conditions else True
 
@@ -244,6 +296,7 @@ class BacktestRepository:
                 analysis_date_to=analysis_date_to,
                 days=days,
             )
+            self._append_history_owner_scope(conditions)
             where_clause = and_(*conditions) if conditions else True
             rows = session.execute(
                 select(
@@ -284,6 +337,7 @@ class BacktestRepository:
                 analysis_date_to=analysis_date_to,
                 days=days,
             )
+            self._append_history_owner_scope(conditions)
             where_clause = and_(*conditions) if conditions else True
             query = (
                 select(BacktestResult, AnalysisHistory.context_snapshot)
@@ -315,10 +369,12 @@ class BacktestRepository:
                 analysis_date_to=analysis_date_to,
                 days=days,
             )
+            self._append_history_owner_scope(conditions)
             where_clause = and_(*conditions) if conditions else True
             count = session.execute(
                 select(func.count(BacktestResult.id))
                 .select_from(BacktestResult)
+                .join(AnalysisHistory, AnalysisHistory.id == BacktestResult.analysis_history_id)
                 .where(where_clause)
             ).scalar() or 0
             return int(count)
@@ -343,9 +399,11 @@ class BacktestRepository:
                 analysis_date_to=analysis_date_to,
                 days=days,
             )
+            self._append_history_owner_scope(conditions)
             where_clause = and_(*conditions) if conditions else True
             query = (
                 select(BacktestResult)
+                .join(AnalysisHistory, AnalysisHistory.id == BacktestResult.analysis_history_id)
                 .where(where_clause)
                 .order_by(desc(BacktestResult.analysis_date), desc(BacktestResult.evaluated_at))
             )
@@ -356,17 +414,22 @@ class BacktestRepository:
 
     def upsert_summary(self, summary: BacktestSummary) -> None:
         """Insert or replace summary row by unique key."""
+        owner_user_id = self._data_owner_user_id()
+        summary.owner_user_id = owner_user_id
         with self.db.get_session() as session:
+            conditions = [
+                BacktestSummary.scope == summary.scope,
+                BacktestSummary.code == summary.code,
+                BacktestSummary.eval_window_days == summary.eval_window_days,
+                BacktestSummary.engine_version == summary.engine_version,
+            ]
+            if owner_user_id:
+                conditions.append(BacktestSummary.owner_user_id == owner_user_id)
+            else:
+                conditions.append(BacktestSummary.owner_user_id.is_(None))
             existing = session.execute(
                 select(BacktestSummary)
-                .where(
-                    and_(
-                        BacktestSummary.scope == summary.scope,
-                        BacktestSummary.code == summary.code,
-                        BacktestSummary.eval_window_days == summary.eval_window_days,
-                        BacktestSummary.engine_version == summary.engine_version,
-                    )
-                )
+                .where(and_(*conditions))
                 .limit(1)
             ).scalar_one_or_none()
 
@@ -417,6 +480,9 @@ class BacktestRepository:
                 conditions.extend(self._build_code_conditions(BacktestSummary.code, code))
             if eval_window_days is not None:
                 conditions.append(BacktestSummary.eval_window_days == eval_window_days)
+            owner_user_id = self._data_owner_user_id()
+            if owner_user_id:
+                conditions.append(BacktestSummary.owner_user_id == owner_user_id)
 
             row = session.execute(
                 select(BacktestSummary)
@@ -470,9 +536,11 @@ class BacktestRepository:
                 analysis_date_to=analysis_date_to,
                 days=None,
             )
+            self._append_history_owner_scope(conditions)
             where_clause = and_(*conditions) if conditions else True
             rows = session.execute(
                 select(BacktestResult.eval_window_days)
+                .join(AnalysisHistory, AnalysisHistory.id == BacktestResult.analysis_history_id)
                 .where(where_clause)
                 .distinct()
                 .order_by(BacktestResult.eval_window_days)

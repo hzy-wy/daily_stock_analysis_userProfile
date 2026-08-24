@@ -32,6 +32,15 @@ class DecisionSignalOutcomeRepository:
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
 
+    @staticmethod
+    def _append_owner_scope(conditions: List[Any]) -> List[Any]:
+        from src.services.identity_service import current_user_scope
+
+        owner_user_id = current_user_scope()
+        if owner_user_id:
+            conditions.append(DecisionSignalRecord.owner_user_id == owner_user_id)
+        return conditions
+
     def list_candidate_signals(
         self,
         *,
@@ -59,6 +68,7 @@ class DecisionSignalOutcomeRepository:
             conditions.append(DecisionSignalRecord.source_type == source_type)
         if statuses:
             conditions.append(DecisionSignalRecord.status.in_(statuses))
+        self._append_owner_scope(conditions)
         where_clause = and_(*conditions) if conditions else True
         with self.db.get_session() as session:
             rows = session.execute(
@@ -78,13 +88,19 @@ class DecisionSignalOutcomeRepository:
     ) -> List[DecisionSignalOutcomeRecord]:
         if not signal_ids:
             return []
+        conditions = [
+            DecisionSignalOutcomeRecord.signal_id.in_(signal_ids),
+            DecisionSignalOutcomeRecord.engine_version == engine_version,
+        ]
+        self._append_owner_scope(conditions)
         with self.db.get_session() as session:
             rows = session.execute(
                 select(DecisionSignalOutcomeRecord)
-                .where(
-                    DecisionSignalOutcomeRecord.signal_id.in_(signal_ids),
-                    DecisionSignalOutcomeRecord.engine_version == engine_version,
+                .join(
+                    DecisionSignalRecord,
+                    DecisionSignalRecord.id == DecisionSignalOutcomeRecord.signal_id,
                 )
+                .where(and_(*conditions))
             ).scalars().all()
             return list(rows)
 
@@ -95,27 +111,45 @@ class DecisionSignalOutcomeRepository:
         horizon: str,
         engine_version: str,
     ) -> Optional[DecisionSignalOutcomeRecord]:
+        conditions = [
+            DecisionSignalOutcomeRecord.signal_id == signal_id,
+            DecisionSignalOutcomeRecord.horizon == horizon,
+            DecisionSignalOutcomeRecord.engine_version == engine_version,
+        ]
+        self._append_owner_scope(conditions)
         with self.db.get_session() as session:
             return session.execute(
                 select(DecisionSignalOutcomeRecord)
-                .where(
-                    DecisionSignalOutcomeRecord.signal_id == signal_id,
-                    DecisionSignalOutcomeRecord.horizon == horizon,
-                    DecisionSignalOutcomeRecord.engine_version == engine_version,
+                .join(
+                    DecisionSignalRecord,
+                    DecisionSignalRecord.id == DecisionSignalOutcomeRecord.signal_id,
                 )
+                .where(and_(*conditions))
                 .limit(1)
             ).scalar_one_or_none()
 
     def upsert_outcome(self, fields: Dict[str, Any]) -> Tuple[DecisionSignalOutcomeRecord, bool]:
         now = utc_naive_now()
         with self.db.get_session() as session:
+            signal_conditions = [DecisionSignalRecord.id == fields["signal_id"]]
+            self._append_owner_scope(signal_conditions)
+            if session.scalar(
+                select(DecisionSignalRecord.id).where(and_(*signal_conditions))
+            ) is None:
+                raise ValueError("Decision signal not found")
+            outcome_conditions = [
+                DecisionSignalOutcomeRecord.signal_id == fields["signal_id"],
+                DecisionSignalOutcomeRecord.horizon == fields["horizon"],
+                DecisionSignalOutcomeRecord.engine_version == fields["engine_version"],
+            ]
+            self._append_owner_scope(outcome_conditions)
             existing = session.execute(
                 select(DecisionSignalOutcomeRecord)
-                .where(
-                    DecisionSignalOutcomeRecord.signal_id == fields["signal_id"],
-                    DecisionSignalOutcomeRecord.horizon == fields["horizon"],
-                    DecisionSignalOutcomeRecord.engine_version == fields["engine_version"],
+                .join(
+                    DecisionSignalRecord,
+                    DecisionSignalRecord.id == DecisionSignalOutcomeRecord.signal_id,
                 )
+                .where(and_(*outcome_conditions))
                 .limit(1)
             ).scalar_one_or_none()
             if existing is None:
@@ -158,16 +192,25 @@ class DecisionSignalOutcomeRepository:
             conditions.append(DecisionSignalOutcomeRecord.eval_status == eval_status)
         if outcome:
             conditions.append(DecisionSignalOutcomeRecord.outcome == outcome)
+        self._append_owner_scope(conditions)
         where_clause = and_(*conditions) if conditions else True
         offset = (safe_page - 1) * safe_page_size
         with self.db.get_session() as session:
             total = session.execute(
                 select(func.count(DecisionSignalOutcomeRecord.id))
                 .select_from(DecisionSignalOutcomeRecord)
+                .join(
+                    DecisionSignalRecord,
+                    DecisionSignalRecord.id == DecisionSignalOutcomeRecord.signal_id,
+                )
                 .where(where_clause)
             ).scalar() or 0
             rows = session.execute(
                 select(DecisionSignalOutcomeRecord)
+                .join(
+                    DecisionSignalRecord,
+                    DecisionSignalRecord.id == DecisionSignalOutcomeRecord.signal_id,
+                )
                 .where(where_clause)
                 .order_by(desc(DecisionSignalOutcomeRecord.updated_at), desc(DecisionSignalOutcomeRecord.id))
                 .offset(offset)
@@ -187,6 +230,7 @@ class DecisionSignalOutcomeRepository:
             conditions.append(DecisionSignalOutcomeRecord.horizon.in_(horizons))
         if statuses:
             conditions.append(DecisionSignalRecord.status.in_(statuses))
+        self._append_owner_scope(conditions)
         with self.db.get_session() as session:
             rows = session.execute(
                 select(
@@ -207,19 +251,39 @@ class DecisionSignalOutcomeRepository:
             ]
 
     def get_feedback(self, *, signal_id: int) -> Optional[DecisionSignalFeedbackRecord]:
+        conditions = [DecisionSignalFeedbackRecord.signal_id == signal_id]
+        self._append_owner_scope(conditions)
         with self.db.get_session() as session:
             return session.execute(
                 select(DecisionSignalFeedbackRecord)
-                .where(DecisionSignalFeedbackRecord.signal_id == signal_id)
+                .join(
+                    DecisionSignalRecord,
+                    DecisionSignalRecord.id == DecisionSignalFeedbackRecord.signal_id,
+                )
+                .where(and_(*conditions))
                 .limit(1)
             ).scalar_one_or_none()
 
     def upsert_feedback(self, fields: Dict[str, Any]) -> DecisionSignalFeedbackRecord:
         now = utc_naive_now()
         with self.db.get_session() as session:
+            signal_conditions = [DecisionSignalRecord.id == fields["signal_id"]]
+            self._append_owner_scope(signal_conditions)
+            if session.scalar(
+                select(DecisionSignalRecord.id).where(and_(*signal_conditions))
+            ) is None:
+                raise ValueError("Decision signal not found")
+            feedback_conditions = [
+                DecisionSignalFeedbackRecord.signal_id == fields["signal_id"]
+            ]
+            self._append_owner_scope(feedback_conditions)
             existing = session.execute(
                 select(DecisionSignalFeedbackRecord)
-                .where(DecisionSignalFeedbackRecord.signal_id == fields["signal_id"])
+                .join(
+                    DecisionSignalRecord,
+                    DecisionSignalRecord.id == DecisionSignalFeedbackRecord.signal_id,
+                )
+                .where(and_(*feedback_conditions))
                 .limit(1)
             ).scalar_one_or_none()
             if existing is None:

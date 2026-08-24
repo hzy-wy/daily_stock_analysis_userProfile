@@ -2,10 +2,18 @@ import apiClient from './index';
 
 export type AuthStatusResponse = {
   authEnabled: boolean;
+  authMode?: 'disabled' | 'legacy' | 'multi_user';
   loggedIn: boolean;
   passwordSet?: boolean;
   passwordChangeable?: boolean;
-  setupState: 'enabled' | 'password_retained' | 'no_password';
+  setupState: 'enabled' | 'password_retained' | 'no_password' | 'bootstrap_required';
+  setupRequired?: boolean;
+  user?: {
+    id: string;
+    displayName: string;
+    roles: string[];
+    permissions: string[];
+  } | null;
 };
 
 export const authApi = {
@@ -39,10 +47,13 @@ export const authApi = {
     return data;
   },
 
-  async login(password: string, passwordConfirm?: string): Promise<void> {
-    const body: { password: string; passwordConfirm?: string } = { password };
+  async login(password: string, passwordConfirm?: string, identifier?: string): Promise<void> {
+    const body: { password: string; passwordConfirm?: string; identifier?: string } = { password };
     if (passwordConfirm !== undefined) {
       body.passwordConfirm = passwordConfirm;
+    }
+    if (identifier !== undefined) {
+      body.identifier = identifier;
     }
     await apiClient.post('/api/v1/auth/login', body);
   },
@@ -61,5 +72,19 @@ export const authApi = {
 
   async logout(): Promise<void> {
     await apiClient.post('/api/v1/auth/logout');
+  },
+
+  async acceptInvitation(
+    token: string,
+    displayName: string,
+    password: string,
+    passwordConfirm: string,
+  ): Promise<void> {
+    await apiClient.post('/api/v1/auth/invitations/accept', {
+      token,
+      displayName,
+      password,
+      passwordConfirm,
+    });
   },
 };

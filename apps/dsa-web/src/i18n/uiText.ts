@@ -145,6 +145,7 @@ const zh = {
   'notFound.title': '页面未找到',
 
   'login.adminLogin': '管理员登录',
+  'login.workspaceLogin': '工作台登录',
   'login.adminPassword': '管理员密码',
   'login.confirmPassword': '确认密码',
   'login.confirmPasswordPlaceholder': '再次确认管理员密码',
@@ -1100,6 +1101,7 @@ const en: Record<UiTextKey, string> = {
   'notFound.title': 'Page not found',
 
   'login.adminLogin': 'Admin login',
+  'login.workspaceLogin': 'Workspace login',
   'login.adminPassword': 'Admin password',
   'login.confirmPassword': 'Confirm password',
   'login.confirmPasswordPlaceholder': 'Confirm the admin password',

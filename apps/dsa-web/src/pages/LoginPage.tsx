@@ -20,7 +20,7 @@ type LoginMotionConditions = {
 };
 
 const LoginPage: React.FC = () => {
-  const { login, passwordSet, setupState } = useAuth();
+  const { authMode, login, passwordSet, setupState } = useAuth();
   const { language, t } = useUiLanguage();
   const navigate = useNavigate();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -36,12 +36,14 @@ const LoginPage: React.FC = () => {
   const rawRedirect = searchParams.get('redirect') ?? '';
   const redirect = rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') ? rawRedirect : '/';
 
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | ParsedApiError | null>(null);
 
-  const isFirstTime = setupState === 'no_password' || !passwordSet;
+  const isMultiUser = authMode === 'multi_user';
+  const isFirstTime = !isMultiUser && (setupState === 'no_password' || !passwordSet);
   const copy = language === 'en'
     ? {
       kicker: 'Research operating system',
@@ -184,13 +186,21 @@ const LoginPage: React.FC = () => {
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
+    if (isMultiUser && !identifier.trim()) {
+      setError(language === 'en' ? 'Enter your username or email.' : '请输入用户名或邮箱。');
+      return;
+    }
     if (isFirstTime && password !== passwordConfirm) {
       setError(t('login.passwordMismatch'));
       return;
     }
     setIsSubmitting(true);
     try {
-      const result = await login(password, isFirstTime ? passwordConfirm : undefined);
+      const result = await login(
+        password,
+        isFirstTime ? passwordConfirm : undefined,
+        isMultiUser ? identifier.trim() : undefined,
+      );
       if (result.success) {
         navigate(redirect, { replace: true });
       } else {
@@ -265,7 +275,13 @@ const LoginPage: React.FC = () => {
                 ) : (
                   <Lock className="h-5 w-5 text-[var(--login-accent-text)]" aria-hidden="true" />
                 )}
-                <span>{isFirstTime ? t('login.setupTitle') : t('login.adminLogin')}</span>
+                <span>
+                  {isFirstTime
+                    ? t('login.setupTitle')
+                    : isMultiUser
+                      ? t('login.workspaceLogin')
+                      : t('login.adminLogin')}
+                </span>
               </h2>
               <p className="mt-2 text-sm leading-6 text-[var(--login-text-secondary)]">
                 {isFirstTime ? t('login.setupDescription') : t('login.loginDescription')}
@@ -278,6 +294,22 @@ const LoginPage: React.FC = () => {
 
           <form onSubmit={handleSubmit} className="space-y-5">
             <div className="space-y-4">
+              {isMultiUser ? (
+                <div className="login-form-field">
+                  <Input
+                    id="identifier"
+                    type="text"
+                    appearance="login"
+                    label={language === 'en' ? 'Username or email' : '用户名或邮箱'}
+                    placeholder={language === 'en' ? 'Enter your account identifier' : '请输入账号标识'}
+                    value={identifier}
+                    onChange={(event) => setIdentifier(event.target.value)}
+                    disabled={isSubmitting}
+                    autoFocus
+                    autoComplete="username"
+                  />
+                </div>
+              ) : null}
               <div className="login-form-field">
                 <Input
                   id="password"
@@ -290,7 +322,7 @@ const LoginPage: React.FC = () => {
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   disabled={isSubmitting}
-                  autoFocus
+                  autoFocus={!isMultiUser}
                   autoComplete={isFirstTime ? 'new-password' : 'current-password'}
                 />
               </div>

@@ -48,6 +48,43 @@ class PortfolioRepository:
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
 
+    @staticmethod
+    def _current_owner_user_id() -> Optional[str]:
+        from src.services.identity_service import current_user_scope
+
+        return current_user_scope()
+
+    @staticmethod
+    def _persistence_owner_user_id() -> Optional[str]:
+        from src.services.identity_service import persistence_owner_user_id
+
+        return persistence_owner_user_id()
+
+    @classmethod
+    def _account_conditions(cls, *conditions: Any) -> List[Any]:
+        scoped = list(conditions)
+        owner_user_id = cls._current_owner_user_id()
+        if owner_user_id:
+            scoped.append(PortfolioAccount.owner_user_id == owner_user_id)
+        return scoped
+
+    @classmethod
+    def _append_account_owner_scope(cls, conditions: List[Any]) -> List[Any]:
+        owner_user_id = cls._current_owner_user_id()
+        if owner_user_id:
+            conditions.append(PortfolioAccount.owner_user_id == owner_user_id)
+        return conditions
+
+    def _require_active_owned_account_in_session(self, *, session: Any, account_id: int) -> None:
+        """Defend repository writes even when a caller bypasses the service layer."""
+
+        if self._current_owner_user_id() and self.get_account_in_session(
+            session=session,
+            account_id=account_id,
+            include_inactive=False,
+        ) is None:
+            raise ValueError(f"Active account not found: {account_id}")
+
     # ------------------------------------------------------------------
     # Account CRUD
     # ------------------------------------------------------------------
@@ -63,6 +100,7 @@ class PortfolioRepository:
         with self.db.get_session() as session:
             row = PortfolioAccount(
                 owner_id=owner_id,
+                owner_user_id=self._persistence_owner_user_id(),
                 name=name,
                 broker=broker,
                 market=market,
@@ -85,6 +123,9 @@ class PortfolioRepository:
     def list_accounts(self, include_inactive: bool = False) -> List[PortfolioAccount]:
         with self.db.get_session() as session:
             query = select(PortfolioAccount)
+            owner_user_id = self._current_owner_user_id()
+            if owner_user_id:
+                query = query.where(PortfolioAccount.owner_user_id == owner_user_id)
             if not include_inactive:
                 query = query.where(PortfolioAccount.is_active.is_(True))
             rows = session.execute(query.order_by(PortfolioAccount.id.asc())).scalars().all()
@@ -97,7 +138,7 @@ class PortfolioRepository:
         account_id: int,
         include_inactive: bool = False,
     ) -> Optional[PortfolioAccount]:
-        conditions = [PortfolioAccount.id == account_id]
+        conditions = self._account_conditions(PortfolioAccount.id == account_id)
         if not include_inactive:
             conditions.append(PortfolioAccount.is_active.is_(True))
         return session.execute(
@@ -106,8 +147,9 @@ class PortfolioRepository:
 
     def update_account(self, account_id: int, fields: Dict[str, Any]) -> Optional[PortfolioAccount]:
         with self.db.get_session() as session:
+            conditions = self._account_conditions(PortfolioAccount.id == account_id)
             row = session.execute(
-                select(PortfolioAccount).where(PortfolioAccount.id == account_id).limit(1)
+                select(PortfolioAccount).where(and_(*conditions)).limit(1)
             ).scalar_one_or_none()
             if row is None:
                 return None
@@ -120,8 +162,9 @@ class PortfolioRepository:
 
     def deactivate_account(self, account_id: int) -> bool:
         with self.db.get_session() as session:
+            conditions = self._account_conditions(PortfolioAccount.id == account_id)
             row = session.execute(
-                select(PortfolioAccount).where(PortfolioAccount.id == account_id).limit(1)
+                select(PortfolioAccount).where(and_(*conditions)).limit(1)
             ).scalar_one_or_none()
             if row is None:
                 return False
@@ -280,24 +323,30 @@ class PortfolioRepository:
             )
 
     def has_trade_uid_in_session(self, *, session: Any, account_id: int, trade_uid: str) -> bool:
+        conditions = [
+            PortfolioTrade.account_id == account_id,
+            PortfolioTrade.trade_uid == trade_uid,
+        ]
+        query = select(PortfolioTrade.id)
+        if self._current_owner_user_id():
+            query = query.join(PortfolioAccount, PortfolioTrade.account_id == PortfolioAccount.id)
+            self._append_account_owner_scope(conditions)
         row = session.execute(
-            select(PortfolioTrade.id).where(
-                and_(
-                    PortfolioTrade.account_id == account_id,
-                    PortfolioTrade.trade_uid == trade_uid,
-                )
-            ).limit(1)
+            query.where(and_(*conditions)).limit(1)
         ).scalar_one_or_none()
         return row is not None
 
     def has_trade_dedup_hash_in_session(self, *, session: Any, account_id: int, dedup_hash: str) -> bool:
+        conditions = [
+            PortfolioTrade.account_id == account_id,
+            PortfolioTrade.dedup_hash == dedup_hash,
+        ]
+        query = select(PortfolioTrade.id)
+        if self._current_owner_user_id():
+            query = query.join(PortfolioAccount, PortfolioTrade.account_id == PortfolioAccount.id)
+            self._append_account_owner_scope(conditions)
         row = session.execute(
-            select(PortfolioTrade.id).where(
-                and_(
-                    PortfolioTrade.account_id == account_id,
-                    PortfolioTrade.dedup_hash == dedup_hash,
-                )
-            ).limit(1)
+            query.where(and_(*conditions)).limit(1)
         ).scalar_one_or_none()
         return row is not None
 
@@ -319,6 +368,7 @@ class PortfolioRepository:
         note: Optional[str] = None,
         dedup_hash: Optional[str] = None,
     ) -> PortfolioTrade:
+        self._require_active_owned_account_in_session(session=session, account_id=account_id)
         row = PortfolioTrade(
             account_id=account_id,
             trade_uid=trade_uid,
@@ -363,6 +413,7 @@ class PortfolioRepository:
         currency: str,
         note: Optional[str] = None,
     ) -> PortfolioCashLedger:
+        self._require_active_owned_account_in_session(session=session, account_id=account_id)
         row = PortfolioCashLedger(
             account_id=account_id,
             event_date=event_date,
@@ -395,6 +446,7 @@ class PortfolioRepository:
         split_ratio: Optional[float] = None,
         note: Optional[str] = None,
     ) -> PortfolioCorporateAction:
+        self._require_active_owned_account_in_session(session=session, account_id=account_id)
         row = PortfolioCorporateAction(
             account_id=account_id,
             symbol=symbol,
@@ -417,8 +469,14 @@ class PortfolioRepository:
         return row
 
     def delete_trade_in_session(self, *, session: Any, trade_id: int) -> bool:
+        conditions = [PortfolioTrade.id == trade_id]
+        owner_user_id = self._current_owner_user_id()
+        query = select(PortfolioTrade)
+        if owner_user_id:
+            query = query.join(PortfolioAccount, PortfolioTrade.account_id == PortfolioAccount.id)
+            conditions.append(PortfolioAccount.owner_user_id == owner_user_id)
         row = session.execute(
-            select(PortfolioTrade).where(PortfolioTrade.id == trade_id).limit(1)
+            query.where(and_(*conditions)).limit(1)
         ).scalar_one_or_none()
         if row is None:
             return False
@@ -432,8 +490,14 @@ class PortfolioRepository:
         return True
 
     def delete_cash_ledger_in_session(self, *, session: Any, entry_id: int) -> bool:
+        conditions = [PortfolioCashLedger.id == entry_id]
+        owner_user_id = self._current_owner_user_id()
+        query = select(PortfolioCashLedger)
+        if owner_user_id:
+            query = query.join(PortfolioAccount, PortfolioCashLedger.account_id == PortfolioAccount.id)
+            conditions.append(PortfolioAccount.owner_user_id == owner_user_id)
         row = session.execute(
-            select(PortfolioCashLedger).where(PortfolioCashLedger.id == entry_id).limit(1)
+            query.where(and_(*conditions)).limit(1)
         ).scalar_one_or_none()
         if row is None:
             return False
@@ -447,8 +511,14 @@ class PortfolioRepository:
         return True
 
     def delete_corporate_action_in_session(self, *, session: Any, action_id: int) -> bool:
+        conditions = [PortfolioCorporateAction.id == action_id]
+        owner_user_id = self._current_owner_user_id()
+        query = select(PortfolioCorporateAction)
+        if owner_user_id:
+            query = query.join(PortfolioAccount, PortfolioCorporateAction.account_id == PortfolioAccount.id)
+            conditions.append(PortfolioAccount.owner_user_id == owner_user_id)
         row = session.execute(
-            select(PortfolioCorporateAction).where(PortfolioCorporateAction.id == action_id).limit(1)
+            query.where(and_(*conditions)).limit(1)
         ).scalar_one_or_none()
         if row is None:
             return False
@@ -475,14 +545,16 @@ class PortfolioRepository:
         account_id: int,
         as_of: date,
     ) -> List[PortfolioTrade]:
+        conditions = [
+            PortfolioTrade.account_id == account_id,
+            PortfolioTrade.trade_date <= as_of,
+        ]
+        query = select(PortfolioTrade)
+        if self._current_owner_user_id():
+            query = query.join(PortfolioAccount, PortfolioTrade.account_id == PortfolioAccount.id)
+            self._append_account_owner_scope(conditions)
         rows = session.execute(
-            select(PortfolioTrade)
-            .where(
-                and_(
-                    PortfolioTrade.account_id == account_id,
-                    PortfolioTrade.trade_date <= as_of,
-                )
-            )
+            query.where(and_(*conditions))
             .order_by(PortfolioTrade.trade_date.asc(), PortfolioTrade.id.asc())
         ).scalars().all()
         return list(rows)
@@ -498,14 +570,19 @@ class PortfolioRepository:
         account_id: int,
         as_of: date,
     ) -> List[PortfolioCashLedger]:
-        rows = session.execute(
-            select(PortfolioCashLedger)
-            .where(
-                and_(
-                    PortfolioCashLedger.account_id == account_id,
-                    PortfolioCashLedger.event_date <= as_of,
-                )
+        conditions = [
+            PortfolioCashLedger.account_id == account_id,
+            PortfolioCashLedger.event_date <= as_of,
+        ]
+        query = select(PortfolioCashLedger)
+        if self._current_owner_user_id():
+            query = query.join(
+                PortfolioAccount,
+                PortfolioCashLedger.account_id == PortfolioAccount.id,
             )
+            self._append_account_owner_scope(conditions)
+        rows = session.execute(
+            query.where(and_(*conditions))
             .order_by(PortfolioCashLedger.event_date.asc(), PortfolioCashLedger.id.asc())
         ).scalars().all()
         return list(rows)
@@ -521,14 +598,19 @@ class PortfolioRepository:
         account_id: int,
         as_of: date,
     ) -> List[PortfolioCorporateAction]:
-        rows = session.execute(
-            select(PortfolioCorporateAction)
-            .where(
-                and_(
-                    PortfolioCorporateAction.account_id == account_id,
-                    PortfolioCorporateAction.effective_date <= as_of,
-                )
+        conditions = [
+            PortfolioCorporateAction.account_id == account_id,
+            PortfolioCorporateAction.effective_date <= as_of,
+        ]
+        query = select(PortfolioCorporateAction)
+        if self._current_owner_user_id():
+            query = query.join(
+                PortfolioAccount,
+                PortfolioCorporateAction.account_id == PortfolioAccount.id,
             )
+            self._append_account_owner_scope(conditions)
+        rows = session.execute(
+            query.where(and_(*conditions))
             .order_by(PortfolioCorporateAction.effective_date.asc(), PortfolioCorporateAction.id.asc())
         ).scalars().all()
         return list(rows)
@@ -536,6 +618,12 @@ class PortfolioRepository:
     def get_first_activity_date(self, *, account_id: int, as_of: date) -> Optional[date]:
         """Return earliest event date (trade/cash/corporate action) for one account."""
         with self.db.get_session() as session:
+            if self.get_account_in_session(
+                session=session,
+                account_id=account_id,
+                include_inactive=True,
+            ) is None:
+                return None
             first_trade = session.execute(
                 select(func.min(PortfolioTrade.trade_date)).where(
                     and_(
@@ -599,6 +687,7 @@ class PortfolioRepository:
                 PortfolioAccount.id == PortfolioTrade.account_id,
             )
             conditions.append(PortfolioAccount.is_active.is_(True))
+            self._append_account_owner_scope(conditions)
             if conditions:
                 where_clause = and_(*conditions)
                 data_query = data_query.where(where_clause)
@@ -623,10 +712,12 @@ class PortfolioRepository:
         """
 
         with self.db.get_session() as session:
+            conditions = [PortfolioAccount.is_active.is_(True)]
+            self._append_account_owner_scope(conditions)
             query = select(PortfolioTrade).join(
                 PortfolioAccount,
                 PortfolioAccount.id == PortfolioTrade.account_id,
-            ).where(PortfolioAccount.is_active.is_(True))
+            ).where(and_(*conditions))
             if account_id is not None:
                 query = query.where(PortfolioTrade.account_id == account_id)
             rows = session.execute(
@@ -667,6 +758,7 @@ class PortfolioRepository:
                 PortfolioAccount.id == PortfolioCashLedger.account_id,
             )
             conditions.append(PortfolioAccount.is_active.is_(True))
+            self._append_account_owner_scope(conditions)
             if conditions:
                 where_clause = and_(*conditions)
                 data_query = data_query.where(where_clause)
@@ -714,6 +806,7 @@ class PortfolioRepository:
                 PortfolioAccount.id == PortfolioCorporateAction.account_id,
             )
             conditions.append(PortfolioAccount.is_active.is_(True))
+            self._append_account_owner_scope(conditions)
             if conditions:
                 where_clause = and_(*conditions)
                 data_query = data_query.where(where_clause)
@@ -822,19 +915,19 @@ class PortfolioRepository:
     ) -> List[PortfolioDailySnapshot]:
         """Load snapshot rows in ascending date order for risk monitoring."""
         with self.db.get_session() as session:
+            conditions = [
+                PortfolioDailySnapshot.snapshot_date <= as_of,
+                PortfolioDailySnapshot.cost_method == cost_method,
+                PortfolioAccount.is_active.is_(True),
+            ]
+            self._append_account_owner_scope(conditions)
             query = (
                 select(PortfolioDailySnapshot)
                 .join(
                     PortfolioAccount,
                     PortfolioAccount.id == PortfolioDailySnapshot.account_id,
                 )
-                .where(
-                    and_(
-                        PortfolioDailySnapshot.snapshot_date <= as_of,
-                        PortfolioDailySnapshot.cost_method == cost_method,
-                        PortfolioAccount.is_active.is_(True),
-                    )
-                )
+                .where(and_(*conditions))
             )
             if account_id is not None:
                 query = query.where(PortfolioDailySnapshot.account_id == account_id)
@@ -857,13 +950,15 @@ class PortfolioRepository:
     ) -> List[Tuple[str, str]]:
         """Return market/symbol identities from cached non-zero positions only."""
         with self.db.get_session() as session:
+            conditions = [
+                PortfolioPosition.quantity > 0,
+                PortfolioAccount.is_active.is_(True),
+            ]
+            self._append_account_owner_scope(conditions)
             query = (
                 select(PortfolioPosition.market, PortfolioPosition.symbol)
                 .join(PortfolioAccount, PortfolioPosition.account_id == PortfolioAccount.id)
-                .where(
-                    PortfolioPosition.quantity > 0,
-                    PortfolioAccount.is_active.is_(True),
-                )
+                .where(and_(*conditions))
             )
             if account_id is not None:
                 query = query.where(PortfolioPosition.account_id == account_id)
@@ -897,6 +992,7 @@ class PortfolioRepository:
         valuation_currency: str,
     ) -> None:
         with self.db.get_session() as session:
+            self._require_active_owned_account_in_session(session=session, account_id=account_id)
             session.execute(
                 delete(PortfolioPosition).where(
                     and_(
@@ -1018,6 +1114,7 @@ class PortfolioRepository:
         payload: str,
     ) -> None:
         with self.db.get_session() as session:
+            self._require_active_owned_account_in_session(session=session, account_id=account_id)
             existing = session.execute(
                 select(PortfolioDailySnapshot).where(
                     and_(
@@ -1082,6 +1179,7 @@ class PortfolioRepository:
     ) -> None:
         """Atomically refresh position cache and daily snapshot in one transaction."""
         with self.db.get_session() as session:
+            self._require_active_owned_account_in_session(session=session, account_id=account_id)
             session.execute(
                 delete(PortfolioPosition).where(
                     and_(

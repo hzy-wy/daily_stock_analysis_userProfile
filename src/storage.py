@@ -18,6 +18,7 @@ import json
 import logging
 import threading
 import time
+import uuid
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple, Callable, TypeVar, Union
 
@@ -62,7 +63,7 @@ from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
-CURRENT_SCHEMA_VERSION = "2026-06-05-create-all-baseline"
+CURRENT_SCHEMA_VERSION = "2026-08-24-multi-user-identity-p0"
 INTELLIGENCE_ITEM_NULL_SCOPE_VALUE = "__dsa_null_scope__"
 
 # SQLAlchemy ORM 基类
@@ -94,6 +95,258 @@ class DatabaseSchemaMigration(Base):
     version = Column(String(64), primary_key=True)
     description = Column(String(255), nullable=False)
     applied_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+
+
+class UserRecord(Base):
+    """Canonical human identity used by every interactive entry point."""
+
+    __tablename__ = 'users'
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    display_name = Column(String(100), nullable=False)
+    status = Column(String(24), nullable=False, default='active', index=True)
+    token_version = Column(Integer, nullable=False, default=1)
+    is_bootstrap_owner = Column(Boolean, nullable=False, default=False, index=True)
+    last_login_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, nullable=False)
+    deleted_at = Column(DateTime, index=True)
+
+    __table_args__ = (
+        Index(
+            'uix_users_single_bootstrap_owner',
+            'is_bootstrap_owner',
+            unique=True,
+            sqlite_where=text('is_bootstrap_owner = 1'),
+            postgresql_where=text('is_bootstrap_owner = true'),
+        ),
+    )
+
+
+class AuthIdentityRecord(Base):
+    """Login identifier mapped to one canonical user."""
+
+    __tablename__ = 'auth_identities'
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    provider = Column(String(32), nullable=False, default='local', index=True)
+    provider_subject = Column(String(255), nullable=False)
+    identifier_normalized = Column(String(255), nullable=False)
+    is_primary = Column(Boolean, nullable=False, default=False)
+    verified_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('provider', 'provider_subject', name='uix_auth_identity_provider_subject'),
+        UniqueConstraint('provider', 'identifier_normalized', name='uix_auth_identity_provider_identifier'),
+        Index('ix_auth_identity_user_provider', 'user_id', 'provider'),
+    )
+
+
+class PasswordCredentialRecord(Base):
+    """Password verifier; hashes use PHC strings or an explicit legacy scheme."""
+
+    __tablename__ = 'password_credentials'
+
+    user_id = Column(String(36), ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
+    password_hash = Column(Text, nullable=False)
+    algorithm = Column(String(64), nullable=False, default='argon2id')
+    must_change = Column(Boolean, nullable=False, default=False)
+    failed_attempts = Column(Integer, nullable=False, default=0)
+    locked_until = Column(DateTime, index=True)
+    password_changed_at = Column(DateTime, default=utc_naive_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, nullable=False)
+
+
+class MfaAuthenticatorRecord(Base):
+    """Reserved MFA credential storage for TOTP and passkeys."""
+
+    __tablename__ = 'mfa_authenticators'
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    authenticator_type = Column(String(32), nullable=False, index=True)
+    label = Column(String(100))
+    secret_encrypted = Column(Text)
+    credential_json = Column(Text)
+    enabled = Column(Boolean, nullable=False, default=False, index=True)
+    last_used_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+
+
+class AuthSessionRecord(Base):
+    """Server-side revocable browser session; only the token hash is stored."""
+
+    __tablename__ = 'auth_sessions'
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    user_id = Column(String(36), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    audience = Column(String(16), nullable=False, index=True)
+    mfa_level = Column(Integer, nullable=False, default=0)
+    token_version = Column(Integer, nullable=False, default=1)
+    ip_address = Column(String(64))
+    user_agent = Column(String(500))
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+    last_seen_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    idle_expires_at = Column(DateTime, nullable=False, index=True)
+    revoked_at = Column(DateTime, index=True)
+    revoke_reason = Column(String(100))
+
+    __table_args__ = (
+        Index('ix_auth_session_user_audience_active', 'user_id', 'audience', 'revoked_at'),
+    )
+
+
+class RoleRecord(Base):
+    """Stable platform role."""
+
+    __tablename__ = 'roles'
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    key = Column(String(64), nullable=False, unique=True, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(Text)
+    is_system = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
+class PermissionRecord(Base):
+    """Atomic operation permission."""
+
+    __tablename__ = 'permissions'
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    key = Column(String(100), nullable=False, unique=True, index=True)
+    description = Column(Text)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
+class RolePermissionRecord(Base):
+    """Many-to-many mapping between roles and operation permissions."""
+
+    __tablename__ = 'role_permissions'
+
+    role_id = Column(String(36), ForeignKey('roles.id', ondelete='CASCADE'), primary_key=True)
+    permission_id = Column(String(36), ForeignKey('permissions.id', ondelete='CASCADE'), primary_key=True)
+
+
+class UserRoleAssignmentRecord(Base):
+    """Role assignment with optional future organization/resource scope."""
+
+    __tablename__ = 'user_role_assignments'
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    role_id = Column(String(36), ForeignKey('roles.id', ondelete='CASCADE'), nullable=False, index=True)
+    scope_type = Column(String(24), nullable=False, default='platform')
+    scope_id = Column(String(64), nullable=False, default='*')
+    granted_by_user_id = Column(String(36), ForeignKey('users.id', ondelete='SET NULL'))
+    valid_from = Column(DateTime, default=utc_naive_now, nullable=False)
+    expires_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'role_id', 'scope_type', 'scope_id', name='uix_user_role_scope'),
+    )
+
+
+class InvitationRecord(Base):
+    """One-time invite used by private multi-user deployments."""
+
+    __tablename__ = 'invitations'
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    identifier_normalized = Column(String(255), nullable=False, index=True)
+    role_key = Column(String(64), nullable=False, default='member')
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    invited_by_user_id = Column(String(36), ForeignKey('users.id', ondelete='SET NULL'))
+    expires_at = Column(DateTime, nullable=False, index=True)
+    accepted_at = Column(DateTime, index=True)
+    revoked_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+
+
+class ServiceAccountRecord(Base):
+    """Non-interactive principal for bots and automation."""
+
+    __tablename__ = 'service_accounts'
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(100), nullable=False)
+    owner_user_id = Column(String(36), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    status = Column(String(24), nullable=False, default='active', index=True)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+    disabled_at = Column(DateTime, index=True)
+
+
+class ApiKeyRecord(Base):
+    """Hashed API credential with explicit scopes."""
+
+    __tablename__ = 'api_keys'
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    service_account_id = Column(String(36), ForeignKey('service_accounts.id', ondelete='CASCADE'), nullable=False, index=True)
+    key_prefix = Column(String(16), nullable=False, index=True)
+    key_hash = Column(String(64), nullable=False, unique=True, index=True)
+    scopes_json = Column(Text, nullable=False, default='[]')
+    expires_at = Column(DateTime, index=True)
+    last_used_at = Column(DateTime, index=True)
+    revoked_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+
+
+class AuditLogRecord(Base):
+    """Append-only security and administrative audit event."""
+
+    __tablename__ = 'audit_logs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    actor_type = Column(String(24), nullable=False, index=True)
+    actor_id = Column(String(36), index=True)
+    action = Column(String(100), nullable=False, index=True)
+    resource_type = Column(String(64), index=True)
+    resource_id = Column(String(128), index=True)
+    outcome = Column(String(24), nullable=False, default='success', index=True)
+    request_id = Column(String(64), index=True)
+    ip_address = Column(String(64))
+    details_json = Column(Text)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+
+
+class SecurityEventRecord(Base):
+    """Authentication event used for incident review and persistent throttling."""
+
+    __tablename__ = 'security_events'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_type = Column(String(64), nullable=False, index=True)
+    user_id = Column(String(36), ForeignKey('users.id', ondelete='SET NULL'), index=True)
+    identifier_hash = Column(String(64), index=True)
+    ip_address = Column(String(64), index=True)
+    outcome = Column(String(24), nullable=False, index=True)
+    details_json = Column(Text)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+
+
+class UserWatchlistRecord(Base):
+    """Per-user product watchlist; global STOCK_LIST remains the scheduler scope."""
+
+    __tablename__ = 'user_watchlist_items'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(36), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    stock_code = Column(String(32), nullable=False)
+    display_code = Column(String(32), nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'stock_code', name='uix_user_watchlist_stock'),
+        Index('ix_user_watchlist_order', 'user_id', 'sort_order', 'id'),
+    )
 
 
 class StockDaily(Base):
@@ -308,6 +561,7 @@ class AnalysisHistory(Base):
     __tablename__ = 'analysis_history'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_user_id = Column(String(36), ForeignKey('users.id', ondelete='SET NULL'), index=True)
 
     # 关联查询链路
     query_id = Column(String(64), index=True)
@@ -437,6 +691,7 @@ class BacktestSummary(Base):
     __tablename__ = 'backtest_summaries'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_user_id = Column(String(36), ForeignKey('users.id', ondelete='SET NULL'), index=True)
 
     scope = Column(String(16), nullable=False, index=True)  # overall/stock
     code = Column(String(16), index=True)
@@ -476,12 +731,14 @@ class BacktestSummary(Base):
     diagnostics_json = Column(Text)
 
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            'uix_backtest_summary_owner_scope_code_window_version',
+            'owner_user_id',
             'scope',
             'code',
             'eval_window_days',
             'engine_version',
-            name='uix_backtest_summary_scope_code_window_version',
+            unique=True,
         ),
     )
 
@@ -492,6 +749,7 @@ class PortfolioAccount(Base):
     __tablename__ = 'portfolio_accounts'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_user_id = Column(String(36), ForeignKey('users.id', ondelete='SET NULL'), index=True)
     owner_id = Column(String(64), index=True)
     name = Column(String(64), nullable=False)
     broker = Column(String(64))
@@ -692,6 +950,7 @@ class ConversationMessage(Base):
     __tablename__ = 'conversation_messages'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_user_id = Column(String(36), ForeignKey('users.id', ondelete='SET NULL'), index=True)
     session_id = Column(String(100), index=True, nullable=False)
     role = Column(String(20), nullable=False)  # user, assistant, system
     content = Column(Text, nullable=False)
@@ -704,13 +963,30 @@ class ConversationSummary(Base):
     __tablename__ = 'conversation_summaries'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String(100), nullable=False, unique=True, index=True)
+    owner_user_id = Column(String(36), ForeignKey('users.id', ondelete='SET NULL'), index=True)
+    session_id = Column(String(100), nullable=False, index=True)
     summary = Column(Text, nullable=False)
     covered_message_id = Column(Integer, nullable=False, default=0)
     source_message_count = Column(Integer, nullable=False, default=0)
     estimated_tokens = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.now, index=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        Index(
+            'uix_conversation_summary_owner_session',
+            'owner_user_id',
+            'session_id',
+            unique=True,
+        ),
+        Index(
+            'uix_conversation_summary_legacy_session',
+            'session_id',
+            unique=True,
+            sqlite_where=text('owner_user_id IS NULL'),
+            postgresql_where=text('owner_user_id IS NULL'),
+        ),
+    )
 
 
 class AgentProviderTurn(Base):
@@ -719,6 +995,7 @@ class AgentProviderTurn(Base):
     __tablename__ = 'agent_provider_turns'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_user_id = Column(String(36), ForeignKey('users.id', ondelete='SET NULL'), index=True)
     session_id = Column(String(100), nullable=False, index=True)
     run_id = Column(String(64), nullable=False, index=True)
     provider = Column(String(64), nullable=False, index=True)
@@ -744,6 +1021,7 @@ class LLMUsage(Base):
     __tablename__ = 'llm_usage'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_user_id = Column(String(36), ForeignKey('users.id', ondelete='SET NULL'), index=True)
     # 'analysis' | 'agent' | 'market_review'
     call_type = Column(String(32), nullable=False, index=True)
     model = Column(String(128), nullable=False)
@@ -890,6 +1168,7 @@ class AlertRuleRecord(Base):
     __tablename__ = 'alert_rules'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_user_id = Column(String(36), ForeignKey('users.id', ondelete='SET NULL'), index=True)
     name = Column(String(64), nullable=False)
     target_scope = Column(String(32), nullable=False, default='single_symbol', index=True)
     target = Column(String(64), nullable=False, index=True)
@@ -987,6 +1266,7 @@ class DecisionSignalRecord(Base):
     __tablename__ = 'decision_signals'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_user_id = Column(String(36), ForeignKey('users.id', ondelete='SET NULL'), index=True)
     stock_code = Column(String(16), nullable=False, index=True)
     stock_name = Column(String(64))
     market = Column(String(8), nullable=False, index=True)
@@ -1255,6 +1535,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
             # 创建所有表
             Base.metadata.create_all(self._engine)
+            self._ensure_single_bootstrap_owner_index()
+            self._ensure_multi_user_owner_columns()
+            self._ensure_conversation_summary_owner_index()
+            self._ensure_backtest_summary_owner_index()
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
             self._ensure_intelligence_item_scope_values()
@@ -1277,6 +1561,42 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._SessionLocal = None
             self.__class__._instance = None
             raise
+
+    @staticmethod
+    def _request_owner_user_id() -> Optional[str]:
+        """Return the authenticated user to stamp on newly-created private rows."""
+        from src.services.identity_service import persistence_owner_user_id
+
+        return persistence_owner_user_id()
+
+    def _ensure_single_bootstrap_owner_index(self) -> None:
+        """Add the partial owner invariant to databases created before multi-user mode."""
+
+        backend = self._engine.url.get_backend_name()
+        if backend == 'sqlite':
+            predicate = 'is_bootstrap_owner = 1'
+        elif backend == 'postgresql':
+            predicate = 'is_bootstrap_owner = true'
+        else:
+            return
+        with self._engine.begin() as connection:
+            connection.execute(
+                text(
+                    'CREATE UNIQUE INDEX IF NOT EXISTS '
+                    'uix_users_single_bootstrap_owner '
+                    f'ON users (is_bootstrap_owner) WHERE {predicate}'
+                )
+            )
+
+    @staticmethod
+    def _append_owner_scope(conditions: List[Any], model: Any) -> List[Any]:
+        """Apply user ownership; actor-less multi-user jobs inherit the Owner scope."""
+        from src.services.identity_service import persistence_owner_user_id
+
+        owner_user_id = persistence_owner_user_id()
+        if owner_user_id:
+            conditions.append(model.owner_user_id == owner_user_id)
+        return conditions
 
     def _ensure_schema_migration_record(self) -> None:
         session = self._SessionLocal()
@@ -1303,6 +1623,174 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             raise
         finally:
             session.close()
+
+    def _ensure_multi_user_owner_columns(self) -> None:
+        """Add nullable owner columns to existing databases before identity backfill.
+
+        ``metadata.create_all`` creates the complete schema for new installations
+        but intentionally does not mutate existing tables.  P0 keeps this
+        migration additive and nullable so legacy/scheduled records remain
+        readable until the identity service assigns the deployment owner.
+        """
+
+        table_names = (
+            AnalysisHistory.__tablename__,
+            BacktestSummary.__tablename__,
+            PortfolioAccount.__tablename__,
+            ConversationMessage.__tablename__,
+            ConversationSummary.__tablename__,
+            AgentProviderTurn.__tablename__,
+            LLMUsage.__tablename__,
+            AlertRuleRecord.__tablename__,
+            DecisionSignalRecord.__tablename__,
+        )
+        inspector = None if self._is_sqlite_engine else inspect(self._engine)
+        with self._engine.begin() as connection:
+            for table_name in table_names:
+                if self._is_sqlite_engine:
+                    table_info = connection.exec_driver_sql(
+                        f'PRAGMA table_info("{table_name}")'
+                    ).fetchall()
+                    if not table_info:
+                        continue
+                    columns = {str(row[1]) for row in table_info}
+                else:
+                    if inspector is None or not inspector.has_table(table_name):
+                        continue
+                    columns = {
+                        column["name"]
+                        for column in inspector.get_columns(table_name)
+                    }
+                if "owner_user_id" not in columns:
+                    connection.exec_driver_sql(
+                        f'ALTER TABLE "{table_name}" ADD COLUMN owner_user_id VARCHAR(36)'
+                    )
+                connection.exec_driver_sql(
+                    f'CREATE INDEX IF NOT EXISTS "ix_{table_name}_owner_user_id" '
+                    f'ON "{table_name}" (owner_user_id)'
+                )
+
+    def _ensure_conversation_summary_owner_index(self) -> None:
+        """Replace the legacy global session-id constraint with owner-scoped uniqueness."""
+
+        if not self._is_sqlite_engine:
+            return
+        table_name = ConversationSummary.__tablename__
+        with self._engine.connect() as connection:
+            index_names = {
+                str(row[1])
+                for row in connection.execute(text(f'PRAGMA index_list("{table_name}")'))
+            }
+        if 'uix_conversation_summary_owner_session' in index_names:
+            return
+
+        temporary_table = (
+            f"conversation_summaries_recreate_tmp_{int(time.time() * 1_000_000_000)}"
+        )
+        columns = [column.name for column in ConversationSummary.__table__.columns]
+        select_clause = ", ".join(f'"{column}"' for column in columns)
+        tmp_metadata = MetaData()
+        tmp_table = Table(
+            temporary_table,
+            tmp_metadata,
+            *(column.copy() for column in ConversationSummary.__table__.columns),
+        )
+        logger.info(
+            "Rebuilding conversation_summaries to scope session uniqueness by owner."
+        )
+        with self._engine.begin() as connection:
+            connection.execute(text(f'DROP TABLE IF EXISTS "{temporary_table}"'))
+            tmp_table.create(connection)
+            connection.execute(
+                text(
+                    f'INSERT INTO "{temporary_table}" ({select_clause}) '
+                    f'SELECT {select_clause} FROM "{table_name}"'
+                )
+            )
+            connection.execute(text(f'DROP TABLE "{table_name}"'))
+            connection.execute(
+                text(f'ALTER TABLE "{temporary_table}" RENAME TO "{table_name}"')
+            )
+            connection.execute(
+                text(
+                    'CREATE UNIQUE INDEX uix_conversation_summary_owner_session '
+                    f'ON "{table_name}" (owner_user_id, session_id)'
+                )
+            )
+            connection.execute(
+                text(
+                    'CREATE UNIQUE INDEX uix_conversation_summary_legacy_session '
+                    f'ON "{table_name}" (session_id) WHERE owner_user_id IS NULL'
+                )
+            )
+            for column_name in ('owner_user_id', 'session_id', 'created_at', 'updated_at'):
+                connection.execute(
+                    text(
+                        f'CREATE INDEX IF NOT EXISTS ix_{table_name}_{column_name} '
+                        f'ON "{table_name}" ({column_name})'
+                    )
+                )
+
+    def _ensure_backtest_summary_owner_index(self) -> None:
+        """Migrate backtest summary uniqueness from global to per-user scope."""
+
+        if not self._is_sqlite_engine:
+            return
+        table_name = BacktestSummary.__tablename__
+        target_index = 'uix_backtest_summary_owner_scope_code_window_version'
+        with self._engine.connect() as connection:
+            index_names = {
+                str(row[1])
+                for row in connection.execute(text(f'PRAGMA index_list("{table_name}")'))
+            }
+        if target_index in index_names:
+            return
+
+        temporary_table = (
+            f"backtest_summaries_recreate_tmp_{int(time.time() * 1_000_000_000)}"
+        )
+        columns = [column.name for column in BacktestSummary.__table__.columns]
+        select_clause = ", ".join(f'"{column}"' for column in columns)
+        tmp_metadata = MetaData()
+        tmp_table = Table(
+            temporary_table,
+            tmp_metadata,
+            *(column.copy() for column in BacktestSummary.__table__.columns),
+        )
+        logger.info("Rebuilding backtest_summaries to scope aggregates by owner.")
+        with self._engine.begin() as connection:
+            connection.execute(text(f'DROP TABLE IF EXISTS "{temporary_table}"'))
+            tmp_table.create(connection)
+            connection.execute(
+                text(
+                    f'INSERT INTO "{temporary_table}" ({select_clause}) '
+                    f'SELECT {select_clause} FROM "{table_name}"'
+                )
+            )
+            connection.execute(text(f'DROP TABLE "{table_name}"'))
+            connection.execute(
+                text(f'ALTER TABLE "{temporary_table}" RENAME TO "{table_name}"')
+            )
+            connection.execute(
+                text(
+                    f'CREATE UNIQUE INDEX {target_index} ON "{table_name}" '
+                    '(owner_user_id, scope, code, eval_window_days, engine_version)'
+                )
+            )
+            connection.execute(
+                text(
+                    'CREATE UNIQUE INDEX uix_backtest_summary_legacy_scope_code_window_version '
+                    f'ON "{table_name}" (scope, code, eval_window_days, engine_version) '
+                    'WHERE owner_user_id IS NULL'
+                )
+            )
+            for column_name in ('owner_user_id', 'scope', 'code', 'computed_at'):
+                connection.execute(
+                    text(
+                        f'CREATE INDEX IF NOT EXISTS ix_{table_name}_{column_name} '
+                        f'ON "{table_name}" ({column_name})'
+                    )
+                )
 
     def _ensure_decision_signal_profile_schema(self) -> None:
         """Add and backfill nullable decision_profile for existing SQLite DBs."""
@@ -2171,6 +2659,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         try:
             def _write(session: Session) -> int:
                 history = AnalysisHistory(
+                    owner_user_id=self._request_owner_user_id(),
                     query_id=query_id,
                     code=result.code,
                     name=result.name,
@@ -2219,6 +2708,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         try:
             def _write(session: Session) -> int:
                 conditions = [AnalysisHistory.query_id == query_id]
+                self._append_owner_scope(conditions, AnalysisHistory)
                 if code:
                     conditions.append(AnalysisHistory.code == code)
 
@@ -2298,6 +2788,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
         with self.get_session() as session:
             conditions = []
+            self._append_owner_scope(conditions, AnalysisHistory)
 
             if query_id:
                 conditions.append(AnalysisHistory.query_id == query_id)
@@ -2337,13 +2828,15 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             return None
 
         with self.get_session() as session:
+            conditions = [
+                AnalysisHistory.query_id == query_id,
+                AnalysisHistory.code == code,
+                AnalysisHistory.report_type == report_type,
+            ]
+            self._append_owner_scope(conditions, AnalysisHistory)
             return session.execute(
                 select(AnalysisHistory.id)
-                .where(
-                    AnalysisHistory.query_id == query_id,
-                    AnalysisHistory.code == code,
-                    AnalysisHistory.report_type == report_type,
-                )
+                .where(and_(*conditions))
                 .order_by(desc(AnalysisHistory.created_at), desc(AnalysisHistory.id))
                 .limit(1)
             ).scalar_one_or_none()
@@ -2375,6 +2868,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         
         with self.get_session() as session:
             conditions = []
+            self._append_owner_scope(conditions, AnalysisHistory)
             
             if code:
                 if isinstance(code, list):
@@ -2425,8 +2919,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             AnalysisHistory 对象，不存在返回 None
         """
         with self.get_session() as session:
+            conditions = [AnalysisHistory.id == record_id]
+            self._append_owner_scope(conditions, AnalysisHistory)
             result = session.execute(
-                select(AnalysisHistory).where(AnalysisHistory.id == record_id)
+                select(AnalysisHistory).where(and_(*conditions))
             ).scalars().first()
             return result
 
@@ -2449,9 +2945,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             return 0
 
         def _write(session: Session) -> int:
+            history_conditions = [AnalysisHistory.id.in_(ids)]
+            self._append_owner_scope(history_conditions, AnalysisHistory)
             existing_ids = sorted(
                 session.execute(
-                    select(AnalysisHistory.id).where(AnalysisHistory.id.in_(ids))
+                    select(AnalysisHistory.id).where(and_(*history_conditions))
                 ).scalars().all()
             )
             if not existing_ids:
@@ -2528,6 +3026,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     func.max(AnalysisHistory.id).label("max_id"),
                 )
             )
+            owner_conditions: List[Any] = []
+            self._append_owner_scope(owner_conditions, AnalysisHistory)
+            if owner_conditions:
+                subq = subq.where(and_(*owner_conditions))
             if start_date:
                 subq = subq.where(
                     AnalysisHistory.created_at >= datetime.combine(start_date, datetime.min.time())
@@ -2584,6 +3086,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         """
         with self.get_session() as session:
             conditions = [AnalysisHistory.query_id == query_id]
+            self._append_owner_scope(conditions, AnalysisHistory)
             if code:
                 conditions.append(AnalysisHistory.code == code)
             if report_type:
@@ -2956,6 +3459,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         """
         with self.session_scope() as session:
             msg = ConversationMessage(
+                owner_user_id=self._request_owner_user_id(),
                 session_id=session_id,
                 role=role,
                 content=content
@@ -2969,9 +3473,17 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         获取 Agent 对话历史
         """
         with self.session_scope() as session:
-            stmt = select(ConversationMessage).filter(
-                ConversationMessage.session_id == session_id
-            ).order_by(ConversationMessage.created_at.desc()).limit(limit)
+            conditions = [ConversationMessage.session_id == session_id]
+            self._append_owner_scope(conditions, ConversationMessage)
+            stmt = (
+                select(ConversationMessage)
+                .filter(and_(*conditions))
+                .order_by(
+                    ConversationMessage.created_at.desc(),
+                    ConversationMessage.id.desc(),
+                )
+                .limit(limit)
+            )
             messages = session.execute(stmt).scalars().all()
 
             # 倒序返回，保证时间顺序
@@ -2980,14 +3492,14 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     def get_visible_conversation_messages(self, session_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Return visible user/assistant conversation messages in chronological order."""
         with self.session_scope() as session:
+            conditions = [
+                ConversationMessage.session_id == session_id,
+                ConversationMessage.role.in_(["user", "assistant"]),
+            ]
+            self._append_owner_scope(conditions, ConversationMessage)
             stmt = (
                 select(ConversationMessage)
-                .where(
-                    and_(
-                        ConversationMessage.session_id == session_id,
-                        ConversationMessage.role.in_(["user", "assistant"]),
-                    )
-                )
+                .where(and_(*conditions))
                 .order_by(ConversationMessage.created_at, ConversationMessage.id)
             )
             if limit is not None:
@@ -3013,9 +3525,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     def get_conversation_summary(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Return the rolling summary for a conversation session, if present."""
         with self.session_scope() as session:
-            stmt = select(ConversationSummary).where(
-                ConversationSummary.session_id == session_id
-            )
+            conditions = [ConversationSummary.session_id == session_id]
+            self._append_owner_scope(conditions, ConversationSummary)
+            stmt = select(ConversationSummary).where(and_(*conditions))
             row = session.execute(stmt).scalar_one_or_none()
             if row is None:
                 return None
@@ -3049,6 +3561,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         """Persist one provider protocol trace and enforce per-model retention."""
         with self.session_scope() as session:
             row = AgentProviderTurn(
+                owner_user_id=self._request_owner_user_id(),
                 session_id=session_id,
                 run_id=run_id,
                 provider=provider,
@@ -3086,6 +3599,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         """Return provider trace turns in chronological order."""
         with self.session_scope() as session:
             conditions = [AgentProviderTurn.session_id == session_id]
+            self._append_owner_scope(conditions, AgentProviderTurn)
             if provider:
                 conditions.append(AgentProviderTurn.provider == provider)
             if model:
@@ -3138,16 +3652,16 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         model: str,
         keep: int,
     ) -> int:
+        conditions = [
+            AgentProviderTurn.session_id == session_id,
+            AgentProviderTurn.provider == provider,
+            AgentProviderTurn.model == model,
+            AgentProviderTurn.must_roundtrip.is_(True),
+        ]
+        self._append_owner_scope(conditions, AgentProviderTurn)
         old_ids_stmt = (
             select(AgentProviderTurn.id)
-            .where(
-                and_(
-                    AgentProviderTurn.session_id == session_id,
-                    AgentProviderTurn.provider == provider,
-                    AgentProviderTurn.model == model,
-                    AgentProviderTurn.must_roundtrip.is_(True),
-                )
-            )
+            .where(and_(*conditions))
             .order_by(AgentProviderTurn.created_at.desc(), AgentProviderTurn.id.desc())
             .offset(max(0, int(keep)))
         )
@@ -3170,28 +3684,36 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         """Create or update the rolling summary for a conversation session."""
         with self.session_scope() as session:
             now = datetime.now()
-            values = {
-                "session_id": session_id,
-                "summary": summary,
-                "covered_message_id": int(covered_message_id or 0),
-                "source_message_count": int(source_message_count or 0),
-                "estimated_tokens": int(estimated_tokens or 0),
-                "updated_at": now,
-            }
-            stmt = sqlite_insert(ConversationSummary).values(**values)
-            session.execute(
-                stmt.on_conflict_do_update(
-                    index_elements=["session_id"],
-                    set_=values,
+            owner_user_id = self._request_owner_user_id()
+            conditions = [ConversationSummary.session_id == session_id]
+            if owner_user_id:
+                conditions.append(ConversationSummary.owner_user_id == owner_user_id)
+            else:
+                conditions.append(ConversationSummary.owner_user_id.is_(None))
+            row = session.execute(
+                select(ConversationSummary).where(and_(*conditions))
+            ).scalar_one_or_none()
+            if row is None:
+                row = ConversationSummary(
+                    owner_user_id=owner_user_id,
+                    session_id=session_id,
+                    created_at=now,
                 )
-            )
+                session.add(row)
+            row.summary = summary
+            row.covered_message_id = int(covered_message_id or 0)
+            row.source_message_count = int(source_message_count or 0)
+            row.estimated_tokens = int(estimated_tokens or 0)
+            row.updated_at = now
 
     def conversation_session_exists(self, session_id: str) -> bool:
         """Return True when at least one message exists for the given session."""
         with self.session_scope() as session:
+            conditions = [ConversationMessage.session_id == session_id]
+            self._append_owner_scope(conditions, ConversationMessage)
             stmt = (
                 select(ConversationMessage.id)
-                .where(ConversationMessage.session_id == session_id)
+                .where(and_(*conditions))
                 .limit(1)
             )
             return session.execute(stmt).scalar() is not None
@@ -3233,13 +3755,20 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     func.max(ConversationMessage.created_at).label("last_active"),
                 )
             )
-            conditions = []
+            owner_conditions = []
+            self._append_owner_scope(owner_conditions, ConversationMessage)
+            session_conditions = []
             if normalized_prefix:
-                conditions.append(ConversationMessage.session_id.startswith(normalized_prefix))
+                session_conditions.append(
+                    ConversationMessage.session_id.startswith(normalized_prefix)
+                )
             if exact_ids:
-                conditions.append(ConversationMessage.session_id.in_(exact_ids))
+                session_conditions.append(ConversationMessage.session_id.in_(exact_ids))
+            conditions = list(owner_conditions)
+            if session_conditions:
+                conditions.append(or_(*session_conditions))
             if conditions:
-                base = base.where(or_(*conditions))
+                base = base.where(and_(*conditions))
             stmt = (
                 base
                 .group_by(ConversationMessage.session_id)
@@ -3252,14 +3781,14 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             for row in rows:
                 sid = row.session_id
                 # 取该会话第一条 user 消息作为标题
+                title_conditions = [
+                    ConversationMessage.session_id == sid,
+                    ConversationMessage.role == "user",
+                ]
+                self._append_owner_scope(title_conditions, ConversationMessage)
                 first_user_msg = session.execute(
                     select(ConversationMessage.content)
-                    .where(
-                        and_(
-                            ConversationMessage.session_id == sid,
-                            ConversationMessage.role == "user",
-                        )
-                    )
+                    .where(and_(*title_conditions))
                     .order_by(ConversationMessage.created_at)
                     .limit(1)
                 ).scalar()
@@ -3279,9 +3808,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         获取单个会话的完整消息列表（用于前端恢复历史）
         """
         with self.session_scope() as session:
+            conditions = [ConversationMessage.session_id == session_id]
+            self._append_owner_scope(conditions, ConversationMessage)
             stmt = (
                 select(ConversationMessage)
-                .where(ConversationMessage.session_id == session_id)
+                .where(and_(*conditions))
                 .order_by(ConversationMessage.created_at)
                 .limit(limit)
             )
@@ -3304,20 +3835,20 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             删除的消息数
         """
         with self.session_scope() as session:
+            provider_conditions = [AgentProviderTurn.session_id == session_id]
+            summary_conditions = [ConversationSummary.session_id == session_id]
+            message_conditions = [ConversationMessage.session_id == session_id]
+            self._append_owner_scope(provider_conditions, AgentProviderTurn)
+            self._append_owner_scope(summary_conditions, ConversationSummary)
+            self._append_owner_scope(message_conditions, ConversationMessage)
             session.execute(
-                delete(AgentProviderTurn).where(
-                    AgentProviderTurn.session_id == session_id
-                )
+                delete(AgentProviderTurn).where(and_(*provider_conditions))
             )
             session.execute(
-                delete(ConversationSummary).where(
-                    ConversationSummary.session_id == session_id
-                )
+                delete(ConversationSummary).where(and_(*summary_conditions))
             )
             result = session.execute(
-                delete(ConversationMessage).where(
-                    ConversationMessage.session_id == session_id
-                )
+                delete(ConversationMessage).where(and_(*message_conditions))
             )
             return result.rowcount
 
@@ -3337,6 +3868,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     ) -> None:
         """Append one LLM call record to llm_usage."""
         row_values: Dict[str, Any] = {
+            "owner_user_id": self._request_owner_user_id(),
             "call_type": call_type,
             "model": model or "unknown",
             "stock_code": stock_code,
@@ -3365,10 +3897,12 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             total_tokens, max_total_tokens}
         """
         with self.session_scope() as session:
-            base_filter = and_(
+            conditions = [
                 LLMUsage.called_at >= from_dt,
                 LLMUsage.called_at <= to_dt,
-            )
+            ]
+            self._append_owner_scope(conditions, LLMUsage)
+            base_filter = and_(*conditions)
 
             # Overall totals
             totals = session.execute(
@@ -3451,6 +3985,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         """
         normalized_limit = max(1, min(int(limit or 50), 200))
         with self.session_scope() as session:
+            conditions = [
+                LLMUsage.called_at >= from_dt,
+                LLMUsage.called_at <= to_dt,
+            ]
+            self._append_owner_scope(conditions, LLMUsage)
             rows = session.execute(
                 select(
                     LLMUsage.id,
@@ -3462,12 +4001,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     LLMUsage.total_tokens,
                     LLMUsage.called_at,
                 )
-                .where(
-                    and_(
-                        LLMUsage.called_at >= from_dt,
-                        LLMUsage.called_at <= to_dt,
-                    )
-                )
+                .where(and_(*conditions))
                 .order_by(desc(LLMUsage.called_at), desc(LLMUsage.id))
                 .limit(normalized_limit)
             ).all()

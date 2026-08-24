@@ -4,6 +4,7 @@ Agent API endpoints.
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import threading
@@ -42,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_ACTIVE_CODEX_STREAMS: Dict[str, threading.Event] = {}
+_ACTIVE_CODEX_STREAMS: Dict[tuple[Optional[str], str], threading.Event] = {}
 _ACTIVE_CODEX_STREAMS_LOCK = threading.Lock()
 
 class ChatRequest(BaseModel):
@@ -213,10 +214,17 @@ async def agent_chat(request: ChatRequest):
 
         # Offload the blocking call to a thread to avoid blocking the event loop.
         loop = asyncio.get_running_loop()
+        worker_context = contextvars.copy_context()
+        worker_call = lambda: worker_context.run(
+            lambda: executor.chat(
+                message=request.message,
+                session_id=session_id,
+                context=ctx,
+            )
+        )
         result = await loop.run_in_executor(
             None,
-            lambda: executor.chat(message=request.message, session_id=session_id,
-                                  context=ctx),
+            worker_call,
         )
 
         return ChatResponse(
@@ -461,9 +469,12 @@ async def agent_chat_stream(request: ChatRequest):
     queue: asyncio.Queue = asyncio.Queue()
     cancel_event = threading.Event()
     request_id = request.request_id or str(uuid.uuid4())
+    from src.services.identity_service import current_user_scope
+
+    stream_key = (current_user_scope(), request_id)
     if backend_id == "codex_app_server":
         with _ACTIVE_CODEX_STREAMS_LOCK:
-            if request_id in _ACTIVE_CODEX_STREAMS:
+            if stream_key in _ACTIVE_CODEX_STREAMS:
                 raise HTTPException(
                     status_code=409,
                     detail={
@@ -471,7 +482,7 @@ async def agent_chat_stream(request: ChatRequest):
                         "message": "This Agent request is already running",
                     },
                 )
-            _ACTIVE_CODEX_STREAMS[request_id] = cancel_event
+            _ACTIVE_CODEX_STREAMS[stream_key] = cancel_event
 
     # Pass explicit skills into context for the orchestrator.
     # Direct assignment so caller-provided skills always take precedence.
@@ -560,7 +571,12 @@ async def agent_chat_stream(request: ChatRequest):
 
             # Backend execution starts only after the accepted event has been
             # yielded, so Web state and server persistence share one commit point.
-            fut = loop.run_in_executor(None, run_sync, executor, turn)
+            worker_context = contextvars.copy_context()
+            worker_call = lambda: worker_context.run(run_sync, executor, turn)
+            fut = loop.run_in_executor(
+                None,
+                worker_call,
+            )
             while True:
                 try:
                     if backend_id == "codex_app_server":
@@ -603,8 +619,8 @@ async def agent_chat_stream(request: ChatRequest):
             finally:
                 if backend_id == "codex_app_server":
                     with _ACTIVE_CODEX_STREAMS_LOCK:
-                        if _ACTIVE_CODEX_STREAMS.get(request_id) is cancel_event:
-                            _ACTIVE_CODEX_STREAMS.pop(request_id, None)
+                        if _ACTIVE_CODEX_STREAMS.get(stream_key) is cancel_event:
+                            _ACTIVE_CODEX_STREAMS.pop(stream_key, None)
 
     return StreamingResponse(
         event_generator(),
@@ -620,8 +636,11 @@ async def agent_chat_stream(request: ChatRequest):
 @router.post("/chat/stream/{request_id}/cancel")
 async def cancel_agent_chat_stream(request_id: str):
     """Signal cancellation while the original Codex SSE remains open."""
+    from src.services.identity_service import current_user_scope
+
+    stream_key = (current_user_scope(), request_id)
     with _ACTIVE_CODEX_STREAMS_LOCK:
-        cancel_event = _ACTIVE_CODEX_STREAMS.get(request_id)
+        cancel_event = _ACTIVE_CODEX_STREAMS.get(stream_key)
     if cancel_event is None:
         raise HTTPException(
             status_code=404,
