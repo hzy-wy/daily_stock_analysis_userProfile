@@ -392,12 +392,15 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 
 ### Other Configuration
 
-For private multi-user deployments, set `AUTH_MODE=multi_user`, then create the first owner from a trusted server terminal with `python -m src.auth bootstrap_owner --username owner`. The product workspace uses `/login`; the separate administrator session uses `/admin/login`. Administrators issue one-time invitations and users accept them at `/accept-invite?token=...`. If a database user loses their password, run `python -m src.auth reset_user_password --username <login>` from a trusted terminal; a successful reset revokes all existing sessions for that user. Follow the [multi-user deployment guide](multi-user-auth-deployment-guide_EN.md) for backup, fresh/legacy/Docker enablement, proxy hardening, module validation, and rollback; see the [multi-user identity and RBAC PRD](multi-user-auth-rbac-prd.md) for the product and data model.
+For private multi-user deployments, set `AUTH_MODE=multi_user`, then create the first owner from a trusted server terminal with `python -m src.auth bootstrap_owner --username owner`. The product workspace uses `/login`; the separate administrator session uses `/admin/login`. Administrators issue one-time invitations and users accept them at `/accept-invite?token=...`. For a no-account preview, set `GUEST_ACCESS_ENABLED=true`: visitors enter the same workspace from `/login`, read public live-market data, and use non-persistent AI chat. Personal-data operations still require sign-in, and there is no separate `/demo` page. If a database user loses their password, run `python -m src.auth reset_user_password --username <login>` from a trusted terminal; a successful reset revokes all existing sessions for that user. Follow the [multi-user deployment guide](multi-user-auth-deployment-guide_EN.md) for backup, fresh/legacy/Docker enablement, proxy hardening, module validation, and rollback; see the [multi-user identity and RBAC PRD](multi-user-auth-rbac-prd.md) for the product and data model.
 
 | Variable | Description | Default |
 |--------|------|--------|
 | `STOCK_LIST` | System scheduler analysis scope. It is also the Web watchlist in disabled/legacy mode; multi-user Web watchlists are user-owned and the old value is copied to the first owner once | - |
 | `AUTH_MODE` | Identity mode: `disabled`, `legacy`, or `multi_user`. When omitted, behavior is derived from `ADMIN_AUTH_ENABLED` for backward compatibility | unset |
+| `GUEST_ACCESS_ENABLED` | Show the same-workspace guest entry; public live-market reads and transient AI are available while personal-data operations require sign-in | `false` |
+| `GUEST_AI_REQUESTS_PER_HOUR` | Transient guest AI requests allowed per source IP per hour (in-process limit) | `20` |
+| `GUEST_AI_MAX_HISTORY_MESSAGES` | Browser-held temporary context messages allowed per guest AI request | `10` |
 | `ADMIN_AUTH_ENABLED` | Legacy shared-password switch, used only when `AUTH_MODE` is not explicit | `false` |
 | `USER_SESSION_MAX_AGE_HOURS` / `USER_SESSION_IDLE_MINUTES` | Multi-user workspace absolute and idle session limits | `24` / `480` |
 | `ADMIN_SESSION_MAX_AGE_HOURS` / `ADMIN_SESSION_IDLE_MINUTES` | Separate multi-user administrator absolute and idle session limits | `4` / `30` |

@@ -219,7 +219,7 @@ class CodexAgentBackend(AgentBackend):
 
         model = turn.model or "Codex"
         usage = turn.usage
-        if usage and should_persist_usage_telemetry(usage):
+        if request.persist_usage and usage and should_persist_usage_telemetry(usage):
             persist_llm_usage(usage, model, call_type="agent")
         if request.progress_callback:
             request.progress_callback(stream_event("generating", step=1, message="正在整理分析结果…"))

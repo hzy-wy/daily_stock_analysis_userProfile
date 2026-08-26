@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from api.app import create_app
 from api.v1.endpoints import agent as agent_endpoint
@@ -62,6 +63,23 @@ def _executor(result=None) -> MagicMock:
     executor.prepare_turn.return_value = object()
     executor.execute_turn.return_value = result or _result()
     return executor
+
+
+def _http_request(*, guest: bool = False) -> Request:
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/v1/agent/chat/stream",
+        "raw_path": b"/api/v1/agent/chat/stream",
+        "query_string": b"",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+    })
+    if guest:
+        request.state.guest_access = True
+    return request
 
 
 def _sse_events(text: str) -> list[dict]:
@@ -220,7 +238,8 @@ def test_stream_prepares_and_persists_before_accepted_then_starts_backend() -> N
                     session_id="accepted-session",
                     request_id="accepted-request",
                     context={"stock_code": "AAPL"},
-                )
+                ),
+                _http_request(),
             )
             iterator = response.body_iterator
             first = json.loads((await anext(iterator)).removeprefix("data: ").strip())
@@ -228,6 +247,8 @@ def test_stream_prepares_and_persists_before_accepted_then_starts_backend() -> N
                 message="分析 AAPL",
                 session_id="accepted-session",
                 context={"stock_code": "AAPL"},
+                persist=True,
+                history_messages=None,
             )
             executor.execute_turn.assert_not_called()
             rest = [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in iterator]
@@ -245,6 +266,43 @@ def test_stream_prepares_and_persists_before_accepted_then_starts_backend() -> N
     assert executor.execute_turn.call_args.kwargs["cancel_event"] is not None
 
 
+def test_guest_stream_uses_browser_history_without_persisting() -> None:
+    executor = _executor(_result(backend="litellm"))
+
+    async def exercise() -> list[dict]:
+        with patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config()), \
+             patch("api.v1.endpoints.agent.consume_guest_ai_quota", return_value=(True, 19)), \
+             patch("api.v1.endpoints.agent.get_guest_ai_max_history_messages", return_value=1), \
+             patch("api.v1.endpoints.agent._build_executor", return_value=executor) as build_executor:
+            response = await agent_endpoint.agent_chat_stream(
+                agent_endpoint.ChatRequest(
+                    message="继续分析",
+                    session_id="guest-session",
+                    history=[
+                        agent_endpoint.ChatHistoryMessage(role="user", content="分析 AAPL"),
+                        agent_endpoint.ChatHistoryMessage(role="assistant", content="上一轮回答"),
+                    ],
+                ),
+                _http_request(guest=True),
+            )
+            events = [
+                json.loads(chunk.removeprefix("data: ").strip())
+                async for chunk in response.body_iterator
+            ]
+            assert build_executor.call_args.kwargs["guest"] is True
+            return events
+
+    events = asyncio.run(exercise())
+    assert [event["type"] for event in events] == ["accepted", "done"]
+    executor.prepare_turn.assert_called_once_with(
+        message="继续分析",
+        session_id="guest-session",
+        context={},
+        persist=False,
+        history_messages=[{"role": "assistant", "content": "上一轮回答"}],
+    )
+
+
 @pytest.mark.parametrize("failure", ["context preparation failed", "database write failed"])
 def test_stream_preparation_failure_emits_no_accepted_and_never_starts_backend(failure: str) -> None:
     executor = _executor()
@@ -254,7 +312,8 @@ def test_stream_preparation_failure_emits_no_accepted_and_never_starts_backend(f
         with patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
              patch("api.v1.endpoints.agent._build_executor", return_value=executor):
             response = await agent_endpoint.agent_chat_stream(
-                agent_endpoint.ChatRequest(message="question", session_id="failed-session")
+                agent_endpoint.ChatRequest(message="question", session_id="failed-session"),
+                _http_request(),
             )
             return [
                 json.loads(chunk.removeprefix("data: ").strip())
@@ -304,7 +363,8 @@ def test_agent_chat_stream_cancels_backend_when_generator_closes() -> None:
         with patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
              patch("api.v1.endpoints.agent._build_executor", return_value=executor):
             response = await agent_endpoint.agent_chat_stream(
-                agent_endpoint.ChatRequest(message="question", session_id="cancel-session")
+                agent_endpoint.ChatRequest(message="question", session_id="cancel-session"),
+                _http_request(),
             )
             iterator = response.body_iterator
             assert '"type": "accepted"' in await anext(iterator)
@@ -351,7 +411,8 @@ def test_codex_stop_waits_for_cleanup_and_emits_one_terminal_event() -> None:
                     message="question",
                     session_id="cancel-session",
                     request_id="cancel-request",
-                )
+                ),
+                _http_request(),
             )
             iterator = response.body_iterator
             accepted = json.loads((await anext(iterator)).removeprefix("data: ").strip())

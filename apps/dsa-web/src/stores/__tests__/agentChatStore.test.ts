@@ -74,6 +74,7 @@ beforeEach(() => {
     stopping: false,
     terminalStatus: null,
     stopError: false,
+    guestMode: false,
   });
   vi.clearAllMocks();
 });
@@ -338,6 +339,41 @@ describe('agentChatStore.startStream', () => {
       expect.any(Object),
     );
     expect(useAgentChatStore.getState().chatError).toBeNull();
+  });
+
+  it('keeps guest history in memory and never loads persisted chat sessions', async () => {
+    useAgentChatStore.getState().setGuestMode(true);
+    useAgentChatStore.setState({
+      messages: [
+        { id: 'guest-user', role: 'user', content: '贵州茅台当前趋势如何？' },
+        { id: 'guest-assistant', role: 'assistant', content: '先看趋势与成交量。' },
+      ],
+    });
+    vi.mocked(agentApi.chatStream).mockResolvedValue(
+      createStreamResponse([
+        accepted('request-guest', useAgentChatStore.getState().sessionId),
+        'data: {"type":"done","success":true,"content":"临时分析完成"}',
+      ]),
+    );
+
+    await useAgentChatStore.getState().loadInitialSession();
+    await useAgentChatStore.getState().startStream({
+      message: '再结合估值看一下',
+      request_id: 'request-guest',
+    });
+
+    expect(agentApi.getChatSessions).not.toHaveBeenCalled();
+    expect(agentApi.getChatSessionMessages).not.toHaveBeenCalled();
+    expect(agentApi.chatStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        history: [
+          { role: 'user', content: '贵州茅台当前趋势如何？' },
+          { role: 'assistant', content: '先看趋势与成交量。' },
+        ],
+      }),
+      expect.any(Object),
+    );
+    expect(useAgentChatStore.getState().sessions).toEqual([]);
   });
 
   it('rejects a duplicate accepted event without duplicating the user turn', async () => {

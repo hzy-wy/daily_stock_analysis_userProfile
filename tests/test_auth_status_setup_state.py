@@ -58,10 +58,22 @@ class AuthStatusSetupStateTestCase(unittest.TestCase):
 
         self.env_path = self.data_dir / ".env"
         self.env_path.write_text("ADMIN_AUTH_ENABLED=false\n", encoding="utf-8")
-        self._env_patcher = patch.dict(os.environ, {"ENV_FILE": str(self.env_path)})
+        self._env_patcher = patch.dict(
+            os.environ,
+            {
+                "ENV_FILE": str(self.env_path),
+                "GUEST_ACCESS_ENABLED": "false",
+            },
+        )
         self._env_patcher.start()
+        self._mode_patcher = patch(
+            "api.v1.endpoints.auth.is_multi_user_mode",
+            return_value=False,
+        )
+        self._mode_patcher.start()
 
     def tearDown(self) -> None:
+        self._mode_patcher.stop()
         self._env_patcher.stop()
         self._data_dir_patcher.stop()
         _reset_auth_globals()
@@ -75,6 +87,17 @@ class AuthStatusSetupStateTestCase(unittest.TestCase):
                 data = asyncio.run(auth_status(request))
                 self.assertEqual(data["setupState"], "no_password")
                 self.assertFalse(data["authEnabled"])
+                self.assertFalse(data["guestAccessEnabled"])
+
+    def test_status_exposes_enabled_guest_access(self) -> None:
+        """Guest access is an explicit server flag and does not imply a login session."""
+        request = _make_request()
+        with patch.dict(os.environ, {"GUEST_ACCESS_ENABLED": "true"}):
+            with patch("api.v1.endpoints.auth.is_auth_enabled", return_value=True):
+                data = asyncio.run(auth_status(request))
+
+        self.assertTrue(data["guestAccessEnabled"])
+        self.assertFalse(data["loggedIn"])
 
     def test_status_password_retained(self) -> None:
         """Scenario: Auth disabled but password exists on disk."""

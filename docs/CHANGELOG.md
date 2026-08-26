@@ -8,8 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] 新增由 `GUEST_ACCESS_ENABLED` 控制的同工作台游客体验：访客从 `/login` 进入正常产品页面，可读取公开真实行情并使用限流且不落库的临时 AI 问答；创建持仓账户、保存自选、私有历史等个人数据操作统一提示登录，服务端私有 API 继续强制认证；邀请码注册和现有 RBAC 流程保持不变。
 - [新功能] 新增兼容 disabled/legacy 的 multi_user 身份模式：统一用户与 Argon2id 凭据、普通/管理员独立服务端会话、Owner/Admin/Auditor/Member RBAC、CLI Owner 初始化与受信任终端密码恢复、一次性邀请、用户管理与审计后台，以及分析历史、回测结果/汇总、任务、对话、持仓、告警、决策信号、用量和自选股的用户级数据隔离；旧私有数据与 STOCK_LIST 一次性归属首任 Owner。
 - [文档] 新增多用户身份、登录与权限体系 PRD，以及中英文上线 Runbook，覆盖备份、全新/legacy/Docker 启用、Owner/邀请操作、同源代理安全、逐模块验收、排障和回滚，并同步完整指南、文档索引和环境变量示例。
+- [文档] 新增多用户账号与登录统一使用说明，将核心网址、同工作台游客体验、四类角色、唯一 Owner、邀请码开户、分角色登录、Session 隔离、账号运维、常见报错和回滚整合为单一日常手册，并加入中英文文档索引。
 - [修复] 多用户隔离审计补齐按登录名和客户端 IP 分别持久限流、用户级回测汇总、组合账户全量/子资源读写归属、Agent 流取消归属、失效 Cookie 退出、旧 Owner 用户名冲突拒绝提权和重复 Owner 初始化幂等检查，避免跨用户聚合/取消、未来仓储层绕过和失效会话无法清理。
 - [修复] Agent 对话历史使用消息主键作为同时间戳的稳定次排序键，避免 SQLite 在连续写入用户和助手消息时偶发倒序；同时收敛 Windows SQLite 迁移测试的提交、连接关闭和引擎释放顺序。
 - [改进] Web 端升级为更完整的商业化投研工作台体验：登录页新增分屏信息架构、金融主题文字入场和指针联动环境光，路由切换与持仓页使用可中断的 GSAP 分层动效，首页历史报告改为占满可用工作区以消除宽屏右侧留白，并完整兼容系统“减少动态效果”和“减少透明度”设置。

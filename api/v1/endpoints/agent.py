@@ -9,14 +9,19 @@ import json
 import logging
 import threading
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from api.v1.schemas.system_config import AgentBackendStatusResponse
 from src.config import get_config
+from src.auth import get_client_ip
+from src.guest_access import (
+    consume_guest_ai_quota,
+    get_guest_ai_max_history_messages,
+)
 from src.services.agent_model_service import list_agent_model_deployments
 
 # Tool name -> Chinese display name mapping
@@ -46,10 +51,15 @@ router = APIRouter()
 _ACTIVE_CODEX_STREAMS: Dict[tuple[Optional[str], str], threading.Event] = {}
 _ACTIVE_CODEX_STREAMS_LOCK = threading.Lock()
 
+class ChatHistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=6000)
+
+
 class ChatRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    message: str
+    message: str = Field(min_length=1, max_length=8000)
     session_id: Optional[str] = None
     request_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
     skills: Optional[List[str]] = Field(
@@ -57,6 +67,7 @@ class ChatRequest(BaseModel):
         validation_alias=AliasChoices("skills", "strategies"),
     )
     context: Optional[Dict[str, Any]] = None  # Previous analysis context for data reuse
+    history: Optional[List[ChatHistoryMessage]] = Field(default=None, max_length=30)
 
     @property
     def effective_skills(self) -> Optional[List[str]]:
@@ -321,11 +332,11 @@ async def send_chat_to_notification(request: SendChatRequest):
     return {"success": True}
 
 
-def _build_executor(config, skills: Optional[List[str]] = None):
+def _build_executor(config, skills: Optional[List[str]] = None, *, guest: bool = False):
     """Build and return the backend-neutral Chat executor (sync helper)."""
     from src.agent.factory import build_agent_chat_executor
 
-    return build_agent_chat_executor(config, skills=skills)
+    return build_agent_chat_executor(config, skills=skills, guest=guest)
 
 
 def _get_agent_chat_status(config) -> Dict[str, Any]:
@@ -445,7 +456,7 @@ async def agent_research(request: ResearchRequest):
 
 
 @router.post("/chat/stream")
-async def agent_chat_stream(request: ChatRequest):
+async def agent_chat_stream(request: ChatRequest, http_request: Request):
     """
     Chat with the AI Agent, streaming progress via SSE.
     Each SSE event is a JSON object with a 'type' field:
@@ -463,6 +474,26 @@ async def agent_chat_stream(request: ChatRequest):
     """
     config = get_config()
     backend_id = _select_agent_chat_backend(config)
+    is_guest = bool(getattr(http_request.state, "guest_access", False))
+    guest_history: Optional[List[Dict[str, Any]]] = None
+    if is_guest:
+        history = request.history or []
+        max_history = get_guest_ai_max_history_messages()
+        allowed, remaining = consume_guest_ai_quota(get_client_ip(http_request))
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "guest_ai_rate_limited",
+                    "message": "游客问股次数已达当前小时上限，请稍后再试或登录账号",
+                },
+            )
+        selected_history = history[-max_history:] if max_history > 0 else []
+        guest_history = [item.model_dump() for item in selected_history]
+        logger.info(
+            "Guest Agent request accepted for transient execution (remaining=%s)",
+            remaining,
+        )
 
     session_id = request.session_id or str(uuid.uuid4())
     loop = asyncio.get_running_loop()
@@ -540,12 +571,19 @@ async def agent_chat_stream(request: ChatRequest):
         fut = None
         try:
             try:
-                executor = await asyncio.to_thread(_build_executor, config, skills or None)
+                executor = await asyncio.to_thread(
+                    _build_executor,
+                    config,
+                    skills or None,
+                    guest=is_guest,
+                )
                 turn = await asyncio.to_thread(
                     executor.prepare_turn,
                     message=request.message,
                     session_id=session_id,
                     context=stream_ctx,
+                    persist=not is_guest,
+                    history_messages=guest_history,
                 )
             except asyncio.CancelledError:
                 raise
@@ -629,6 +667,7 @@ async def agent_chat_stream(request: ChatRequest):
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
+            "X-Guest-Mode": "true" if is_guest else "false",
         },
     )
 

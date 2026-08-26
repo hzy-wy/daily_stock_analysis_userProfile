@@ -8,6 +8,7 @@ import {
   Ellipsis,
   Gauge,
   Home,
+  LogIn,
   LogOut,
   Search,
   Settings2,
@@ -80,7 +81,7 @@ const NavigationLink: React.FC<NavigationLinkProps> = ({ item, mode, onNavigate 
 };
 
 export const CommandNavigation: React.FC = () => {
-  const { authEnabled, logout, user } = useAuth();
+  const { authEnabled, guestMode, loggedIn, logout, requestLogin, user } = useAuth();
   const { t } = useUiLanguage();
   const location = useLocation();
   const desktopMenuRef = useRef<HTMLDivElement | null>(null);
@@ -147,9 +148,9 @@ export const CommandNavigation: React.FC = () => {
     [showAlphaSiftNav],
   );
   const dockItems = useMemo(() => primaryItems.slice(0, 4), [primaryItems]);
-  const canConfigureSystem = !user
-    || user.permissions.includes('*')
-    || user.permissions.includes('system.configure');
+  const canConfigureSystem = !authEnabled || Boolean(
+    user && (user.permissions.includes('*') || user.permissions.includes('system.configure')),
+  );
   const secondaryItems = useMemo(
     () => canConfigureSystem
       ? SECONDARY_NAV_ITEMS
@@ -212,10 +213,22 @@ export const CommandNavigation: React.FC = () => {
                       onNavigate={() => setDesktopMenuOpen(false)}
                     />
                   ))}
-                  {authEnabled ? (
+                  {authEnabled && loggedIn ? (
                     <button type="button" onClick={requestLogout} className="command-menu-link command-menu-link--danger">
                       <LogOut className="h-[18px] w-[18px]" />
                       <span>{t('layout.logout')}</span>
+                    </button>
+                  ) : authEnabled && guestMode ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDesktopMenuOpen(false);
+                        requestLogin('登录后可保存个人数据并同步历史记录。');
+                      }}
+                      className="command-menu-link"
+                    >
+                      <LogIn className="h-[18px] w-[18px]" />
+                      <span>登录 / 注册</span>
                     </button>
                   ) : null}
                 </div>
@@ -283,10 +296,22 @@ export const CommandNavigation: React.FC = () => {
               <NavigationLink key={item.key} item={item} mode="menu" onNavigate={closeMobileMenu} />
             ))}
           </nav>
-          {authEnabled ? (
+          {authEnabled && loggedIn ? (
             <button type="button" onClick={requestLogout} className="command-menu-link command-menu-link--danger mt-3 w-full">
               <LogOut className="h-[18px] w-[18px]" />
               <span>{t('layout.logout')}</span>
+            </button>
+          ) : authEnabled && guestMode ? (
+            <button
+              type="button"
+              onClick={() => {
+                closeMobileMenu();
+                requestLogin('登录后可保存个人数据并同步历史记录。');
+              }}
+              className="command-menu-link mt-3 w-full"
+            >
+              <LogIn className="h-[18px] w-[18px]" />
+              <span>登录 / 注册</span>
             </button>
           ) : null}
         </div>

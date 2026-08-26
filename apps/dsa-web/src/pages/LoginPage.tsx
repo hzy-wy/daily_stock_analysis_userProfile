@@ -2,7 +2,7 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { useGSAP } from '@gsap/react';
 import { gsap } from 'gsap';
-import { ArrowRight, Cpu, LineChart, Lock, ShieldCheck, Sparkles } from 'lucide-react';
+import { ArrowRight, Cpu, Eye, LineChart, Lock, ShieldCheck, Sparkles } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { ParsedApiError } from '../api/error';
 import { isParsedApiError } from '../api/error';
@@ -20,7 +20,7 @@ type LoginMotionConditions = {
 };
 
 const LoginPage: React.FC = () => {
-  const { authMode, login, passwordSet, setupState } = useAuth();
+  const { authMode, enterGuestMode, guestAccessEnabled, login, passwordSet, setupState } = useAuth();
   const { language, t } = useUiLanguage();
   const navigate = useNavigate();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -56,6 +56,9 @@ const LoginPage: React.FC = () => {
       ],
       access: 'Workspace access',
       security: 'Local credential check / secure session transport',
+      guestTitle: 'Not ready to create an account?',
+      guestDescription: 'Open the normal workspace with live market data and transient AI chat. Personal data actions still require sign-in.',
+      guestAction: 'Continue as guest',
     }
     : {
       kicker: '智能投研操作系统',
@@ -68,6 +71,9 @@ const LoginPage: React.FC = () => {
       ],
       access: '工作台访问',
       security: '本地凭证校验 / 会话安全传输',
+      guestTitle: '暂时不想创建账号？',
+      guestDescription: '进入同一套正式工作台，查看真实行情并体验不保存记录的 AI 问股；个人数据操作仍需登录。',
+      guestAction: '进入游客体验',
     };
 
   useGSAP((_, contextSafe) => {
@@ -371,6 +377,27 @@ const LoginPage: React.FC = () => {
               </Button>
             </div>
           </form>
+
+          {guestAccessEnabled ? (
+            <div className="login-form-field mt-5 rounded-2xl border border-[var(--login-border-card)] bg-[var(--login-accent-soft)]/55 p-4">
+              <p className="text-sm font-semibold text-[var(--login-text-primary)]">{copy.guestTitle}</p>
+              <p className="mt-1 text-xs leading-5 text-[var(--login-text-secondary)]">{copy.guestDescription}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  enterGuestMode();
+                  navigate(redirect, { replace: true });
+                }}
+                className="mt-3 inline-flex min-h-10 w-full items-center justify-between rounded-xl border border-[var(--login-accent-border)] bg-[var(--login-bg-card)] px-3.5 text-sm font-semibold text-[var(--login-accent-text)] transition-[background-color,transform] duration-200 hover:bg-[var(--login-accent-soft)] active:translate-y-px focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--login-accent-soft)]"
+              >
+                <span className="inline-flex items-center gap-2">
+                  <Eye className="h-4 w-4" aria-hidden="true" />
+                  {copy.guestAction}
+                </span>
+                <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
 
           <div className="login-form-field mt-6 flex items-center gap-2 border-t border-[var(--login-border-card)] pt-5 text-xs text-[var(--login-text-muted)]">
             <Sparkles className="h-3.5 w-3.5 text-[var(--login-accent-text)]" aria-hidden="true" />

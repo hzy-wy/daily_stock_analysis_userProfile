@@ -7,6 +7,7 @@ import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
 import { historyApi } from '../../api/history';
 import type { Message, ProgressStep } from '../../stores/agentChatStore';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
+import { GUEST_SESSION_STORAGE_KEY, LOGIN_REQUIRED_EVENT } from '../../utils/guestAccess';
 import ChatPage from '../ChatPage';
 import { extractStockCodeFromMessage, extractStockCodesFromMessage } from '../../utils/chatStockCode';
 
@@ -80,6 +81,7 @@ const mockStoreState = {
   stopping: false,
   terminalStatus: null as 'cancelled' | 'timeout' | null,
   stopError: false,
+  guestMode: false,
   loadSessions: mockLoadSessions,
   loadInitialSession: mockLoadInitialSession,
   switchSession: mockSwitchSession,
@@ -174,6 +176,7 @@ beforeAll(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+  window.sessionStorage.removeItem(GUEST_SESSION_STORAGE_KEY);
   mockGetStatus.mockReset();
   mockStoreState.messages = [];
   mockStoreState.loading = false;
@@ -2210,6 +2213,34 @@ describe('extractStockCodeFromMessage', () => {
 });
 
 describe('watchlist button with code variants', () => {
+  it('does not load or mutate a personal watchlist while browsing as a guest', async () => {
+    window.sessionStorage.setItem(GUEST_SESSION_STORAGE_KEY, 'active');
+    const loginRequired = vi.fn();
+    window.addEventListener(LOGIN_REQUIRED_EVENT, loginRequired);
+
+    try {
+      render(
+        <MemoryRouter>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      await waitFor(() => expect(mockGetSkills).toHaveBeenCalled());
+      expect(mockGetWatchlist).not.toHaveBeenCalled();
+
+      const textarea = await screen.findByPlaceholderText(/例如/);
+      fireEvent.change(textarea, { target: { value: '分析 600519' } });
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+      fireEvent.click(await screen.findByText('加入自选'));
+
+      expect(loginRequired).toHaveBeenCalledTimes(1);
+      expect(mockAddToWatchlist).not.toHaveBeenCalled();
+      expect(mockRemoveFromWatchlist).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(LOGIN_REQUIRED_EVENT, loginRequired);
+    }
+  });
+
   it('shows "从自选删除" when canonical code is in watchlist and user inputs variant', async () => {
     mockGetWatchlist.mockResolvedValue(['600519', 'HK01810']);
 

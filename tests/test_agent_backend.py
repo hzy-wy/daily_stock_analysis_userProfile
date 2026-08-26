@@ -264,6 +264,15 @@ class _FakeTransport:
         return {"active_permission_profile": {"id": "dsa_gate_a"}}
 
 
+class _UsageFakeTransport(_FakeTransport):
+    def run_turn(self, thread_id, text, timeout=None, cancel_event=None):
+        return TurnResult(
+            turn_id="turn-usage",
+            final_text="codex answer",
+            usage={"total_tokens": 7},
+        )
+
+
 def test_codex_backend_uses_tool_surface_and_ephemeral_transport(monkeypatch) -> None:
     monkeypatch.setattr(
         "src.agent.codex_agent_backend.build_hardened_command",
@@ -290,6 +299,25 @@ def test_codex_backend_uses_tool_surface_and_ephemeral_transport(monkeypatch) ->
     assert "provide or select an exact stock code" in _FakeTransport.last.thread_kwargs[
         "developer_instructions"
     ]
+
+
+def test_codex_guest_turn_returns_usage_without_persisting_it(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "src.agent.codex_agent_backend.build_hardened_command",
+        lambda **kwargs: ["codex", "app-server", "--stdio"],
+    )
+    backend = CodexAgentBackend(
+        _codex_surface(),
+        SimpleNamespace(agent_orchestrator_timeout_s=30),
+        _UsageFakeTransport,
+    )
+
+    with patch("src.agent.codex_agent_backend.persist_llm_usage") as persist_usage:
+        result = backend.run(_request(persist_usage=False))
+
+    assert result.success is True
+    assert result.usage == {"total_tokens": 7}
+    persist_usage.assert_not_called()
 
 
 def test_production_codex_preparation_matches_the_three_phase6_tools(monkeypatch) -> None:

@@ -9,7 +9,11 @@ const mockGetAlphaSiftStatus = vi.fn().mockResolvedValue({ enabled: false, avail
 vi.mock('../../../contexts/AuthContext', () => ({
   useAuth: () => ({
     authEnabled: true,
+    guestMode: false,
+    loggedIn: true,
     logout: mockLogout,
+    requestLogin: vi.fn(),
+    user: { permissions: ['*'] },
   }),
 }));
 

@@ -56,6 +56,7 @@ import type {
 import { areStockCodesEquivalent, normalizeStockCode } from '../utils/stockCode';
 import { parseDecisionSignalDate } from '../utils/decisionSignalTime';
 import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../utils/decisionAction';
+import { dispatchLoginRequired } from '../utils/guestAccess';
 
 const PIE_COLORS = ['#00d4ff', '#00ff88', '#ffaa00', '#ff7a45', '#7f8cff', '#ff4466'];
 const DEFAULT_PAGE_SIZE = 20;
@@ -184,7 +185,11 @@ async function loadPortfolioSignalLookup(lookup: PortfolioSignalLookup): Promise
   }
 }
 
-const PortfolioPage: React.FC = () => {
+type PortfolioPageProps = {
+  guestMode?: boolean;
+};
+
+const PortfolioPage: React.FC<PortfolioPageProps> = ({ guestMode = false }) => {
   const { language, t } = useUiLanguage();
   const text = PORTFOLIO_TEXT[language];
   const decisionActionLabels = useMemo(() => buildDecisionActionLabelMap(t), [t]);
@@ -543,13 +548,15 @@ const PortfolioPage: React.FC = () => {
   }, [eventPage, loadEventsPage, loadSnapshotAndRisk]);
 
   useEffect(() => {
+    if (guestMode) return;
     void loadAccounts();
     void loadBrokers();
-  }, [loadAccounts, loadBrokers]);
+  }, [guestMode, loadAccounts, loadBrokers]);
 
   useEffect(() => {
+    if (guestMode) return;
     void loadSnapshotAndRisk();
-  }, [loadSnapshotAndRisk]);
+  }, [guestMode, loadSnapshotAndRisk]);
 
   useEffect(() => {
     if (!hasAccounts) return undefined;
@@ -576,8 +583,9 @@ const PortfolioPage: React.FC = () => {
   }, [hasAccounts, loadRealtimeSnapshot]);
 
   useEffect(() => {
+    if (guestMode) return;
     void loadEvents();
-  }, [loadEvents]);
+  }, [guestMode, loadEvents]);
 
   useEffect(() => {
     refreshContextRef.current = {
@@ -1025,6 +1033,10 @@ const PortfolioPage: React.FC = () => {
 
   const handleCreateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (guestMode) {
+      dispatchLoginRequired('新建持仓账户会创建并保存你的个人资产数据，请先登录。');
+      return;
+    }
     const name = accountForm.name.trim();
     if (!name) {
       setAccountCreateError('账户名称不能为空。');
@@ -1062,6 +1074,10 @@ const PortfolioPage: React.FC = () => {
   };
 
   const handleRefresh = async () => {
+    if (guestMode) {
+      dispatchLoginRequired('持仓数据属于个人工作区，请先登录后查看或刷新。');
+      return;
+    }
     await Promise.all([loadAccounts(), loadSnapshotAndRisk(), loadEvents(), loadBrokers()]);
     setPortfolioSignalsRefreshKey((current) => current + 1);
   };

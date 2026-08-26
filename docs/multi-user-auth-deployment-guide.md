@@ -11,6 +11,7 @@
 - `platform_owner`、`platform_admin`、`auditor`、`member` 四类角色以及后端原子权限校验。
 - 受信任终端创建首任 Owner、管理员一次性邀请、停用/启用账号、变更角色、审计日志、终端重置用户密码。
 - 分析历史、回测、异步任务、Agent 对话、持仓、告警、决策信号、用量和 Web 自选股的用户级归属与查询隔离。
+- 可配置的同工作台游客体验；不创建身份，仍可读取公开真实行情并使用不落库的临时 AI 问答，涉及个人数据的操作统一引导登录。
 - 旧私有数据一次性归属首任 Owner；旧 `STOCK_LIST` 一次性复制为 Owner 的 Web 自选股。
 
 以下仍属于 P1/P2，不应在本次启用时对外承诺：MFA、OIDC/企业 SSO、组织/团队空间、跨用户资源分享、API Key/服务账号登录、Bot 独立身份和 Desktop loopback 握手。Desktop 如果加载同一 Web 服务，现阶段沿用工作台登录页。
@@ -27,6 +28,8 @@
 | `member` | 是 | 否 | 自己的分析、对话、持仓、告警、信号、回测和用量 |
 
 同一浏览器可以同时保留工作台与后台登录：工作台使用 `dsa_app_sid`，后台使用 `dsa_admin_sid`。退出其中一个入口不会退出另一个入口，也不会影响其他设备。
+
+游客体验没有独立页面，它不是账号、角色或认证 audience。访客从 `/login` 点击“进入游客体验”后进入正常工作台；公开真实行情与临时 AI 问答可用，持仓、自选保存、历史记录、告警等个人数据能力必须登录。
 
 ## 3. 上线前检查与备份
 
@@ -77,6 +80,9 @@ ls -la "$backup_dir"
 
 ```dotenv
 AUTH_MODE=multi_user
+GUEST_ACCESS_ENABLED=false
+GUEST_AI_REQUESTS_PER_HOUR=20
+GUEST_AI_MAX_HISTORY_MESSAGES=10
 DATABASE_PATH=./data/stock_analysis.db
 
 # 普通工作台：最长 24 小时，空闲 8 小时
@@ -97,6 +103,8 @@ MULTI_USER_LEGACY_OWNER_USERNAME=owner
 规则说明：
 
 - `AUTH_MODE` 一旦显式设置，就优先于旧 `ADMIN_AUTH_ENABLED`。无需为了 multi-user 再把旧开关设为 `true`。
+- `GUEST_ACCESS_ENABLED=true` 在 `/login` 显示游客入口，并开放经过服务端白名单约束的公开行情与临时 AI 能力；默认 `false`。
+- `GUEST_AI_REQUESTS_PER_HOUR` 限制单个来源 IP 每小时的游客 AI 请求数；`GUEST_AI_MAX_HISTORY_MESSAGES` 限制浏览器随请求携带的临时上下文条数。两项均不产生用户业务数据。
 - 会话的“绝对有效期”和“空闲有效期”同时生效，以先到者为准；后台建议始终短于工作台。
 - 只有当请求必定经过受控反向代理，且代理会清理并重写 `X-Forwarded-For`、`X-Forwarded-Proto`、`X-Forwarded-Host` 时，才可设置 `TRUST_X_FORWARDED_FOR=true`。
 - 多用户模式不提供匿名网页初始化 Owner。首任 Owner 只能由服务器受信任终端创建或从旧凭据自动导入。
@@ -286,6 +294,8 @@ python -m src.auth reset_user_password --username <登录名>
 ### 10.1 登录与权限
 
 - [ ] 未登录访问工作台私有 API 返回 401。
+- [ ] 若启用游客体验，未登录可从 `/login` 进入正常工作台，看到真实公开行情并完成临时 AI 问答。
+- [ ] 游客刷新页面后 AI 会话消失，`conversation_messages`、`agent_provider_turns`、`llm_usage` 均无游客新增行；创建持仓账户、保存自选、查看私有历史等操作会提示登录，私有 API 仍返回 401。
 - [ ] Owner 可以同时登录 `/login` 与 `/admin/login`。
 - [ ] Member 能登录工作台，登录后台返回 403。
 - [ ] Auditor 能登录后台并读取审计日志，不能管理用户，也不能登录工作台。

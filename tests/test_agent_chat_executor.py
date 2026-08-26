@@ -244,3 +244,33 @@ def test_user_message_persistence_failure_does_not_start_backend() -> None:
             raise AssertionError("database failure must propagate")
 
     assert backend.request is None
+
+
+def test_ephemeral_turn_never_reads_or_writes_conversation_storage() -> None:
+    backend = _Backend(runtime_owns_loop=False)
+    prepared = PreparedAgentChat(
+        system_prompt="system",
+        history_messages=[{"role": "assistant", "content": "transient history"}],
+        stock_scope=None,
+    )
+    with patch("src.agent.chat_executor.prepare_agent_chat", return_value=prepared) as prepare, \
+         patch("src.agent.chat_executor.conversation_manager.get_or_create") as get_or_create, \
+         patch("src.agent.chat_executor.conversation_manager.add_message") as add_message, \
+         patch("src.agent.chat_executor.persist_provider_trace_turns") as persist_trace:
+        executor = _executor(backend)
+        turn = executor.prepare_turn(
+            message="question",
+            session_id="guest-session",
+            persist=False,
+            history_messages=[{"role": "user", "content": "previous"}],
+        )
+        result = executor.execute_turn(turn)
+
+    assert result.success is True
+    assert prepare.call_args.kwargs["history_override"] == [
+        {"role": "user", "content": "previous"}
+    ]
+    assert backend.request.persist_usage is False
+    get_or_create.assert_not_called()
+    add_message.assert_not_called()
+    persist_trace.assert_not_called()

@@ -538,6 +538,7 @@ def prepare_agent_chat(
     use_codex_prompt: bool,
     include_provider_trace: bool,
     strict_initial_stock_scope: bool = False,
+    history_override: Optional[List[Dict[str, Any]]] = None,
 ) -> PreparedAgentChat:
     """Build the existing Chat prompt order without choosing an Agent backend."""
     scope_resolution = resolve_stock_scope(
@@ -569,7 +570,9 @@ def prepare_agent_chat(
         language_section=_build_language_section(report_language, chat_mode=True),
     )
 
-    if include_provider_trace:
+    if history_override is not None:
+        history_messages = [dict(item) for item in history_override]
+    elif include_provider_trace:
         history_messages = list(
             build_agent_chat_context_bundle(session_id, context_llm_adapter, config).context_messages
         )

@@ -15,14 +15,15 @@ from src.agent.provider_trace import persist_provider_trace_turns
 
 @dataclass(frozen=True)
 class PreparedAgentChatTurn:
-    """A persisted user turn that is ready for backend execution."""
+    """A user turn that is ready for backend execution."""
 
     message: str
     session_id: str
     prepared: PreparedAgentChat
     baseline_len: int
     run_id: str
-    user_message_id: int
+    user_message_id: Optional[int]
+    persist: bool
 
 
 class AgentChatExecutor:
@@ -74,9 +75,12 @@ class AgentChatExecutor:
         message: str,
         session_id: str,
         context: Optional[Dict[str, Any]] = None,
+        persist: bool = True,
+        history_messages: Optional[list[Dict[str, Any]]] = None,
     ) -> PreparedAgentChatTurn:
-        """Prepare context and persist the user message without starting a backend."""
-        conversation_manager.get_or_create(session_id)
+        """Prepare a turn, optionally without reading or writing conversation storage."""
+        if persist:
+            conversation_manager.get_or_create(session_id)
         prepared = prepare_agent_chat(
             message=message,
             session_id=session_id,
@@ -89,10 +93,15 @@ class AgentChatExecutor:
             use_codex_prompt=self.backend.backend_id == "codex_app_server",
             include_provider_trace=not self.backend.runtime_owns_loop,
             strict_initial_stock_scope=self.backend.runtime_owns_loop,
+            history_override=history_messages if not persist else None,
         )
         baseline_len = len(prepared.history_messages) + 2
         run_id = str(uuid.uuid4())
-        user_message_id = conversation_manager.add_message(session_id, "user", message)
+        user_message_id = (
+            conversation_manager.add_message(session_id, "user", message)
+            if persist
+            else None
+        )
         return PreparedAgentChatTurn(
             message=message,
             session_id=session_id,
@@ -100,6 +109,7 @@ class AgentChatExecutor:
             baseline_len=baseline_len,
             run_id=run_id,
             user_message_id=user_message_id,
+            persist=persist,
         )
 
     def execute_turn(
@@ -119,6 +129,7 @@ class AgentChatExecutor:
                 stock_scope=turn.prepared.stock_scope,
                 max_steps=self.max_steps,
                 max_wall_clock_seconds=self.timeout_seconds,
+                persist_usage=turn.persist,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
             )
@@ -142,9 +153,12 @@ class AgentChatExecutor:
             usage=backend_result.usage,
         )
 
+        if not turn.persist:
+            return result
+
         if result.success:
             assistant_message_id = conversation_manager.add_message(turn.session_id, "assistant", result.content)
-            if not self.backend.runtime_owns_loop:
+            if not self.backend.runtime_owns_loop and turn.user_message_id is not None:
                 persist_provider_trace_turns(
                     session_id=turn.session_id,
                     run_id=turn.run_id,

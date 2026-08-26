@@ -1,7 +1,7 @@
 import type React from 'react';
-import { lazy, useEffect } from 'react';
+import { lazy, useEffect, useLayoutEffect } from 'react';
 import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { ApiErrorAlert, Shell } from './components/common';
+import { ApiErrorAlert, LoginRequiredDialog, Shell } from './components/common';
 import {
   PageLoadingFallback,
   RouteOutletBoundary,
@@ -26,14 +26,37 @@ const AlertsPage = lazy(() => import('./pages/AlertsPage'));
 const TokenUsagePage = lazy(() => import('./pages/TokenUsagePage'));
 const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
 
+const AuthenticatedOnly: React.FC<{ children: React.ReactNode; reason: string }> = ({ children, reason }) => {
+  const { authEnabled, guestMode, loggedIn, requestLogin } = useAuth();
+
+  useEffect(() => {
+    if (guestMode && !loggedIn) requestLogin(reason);
+  }, [guestMode, loggedIn, reason, requestLogin]);
+
+  if (authEnabled && !loggedIn) return <Navigate to="/" replace />;
+  return <>{children}</>;
+};
+
 const AppContent: React.FC = () => {
   const location = useLocation();
-  const { authEnabled, loggedIn, isLoading, loadError, refreshStatus, user } = useAuth();
+  const {
+    authEnabled,
+    guestMode,
+    loggedIn,
+    isLoading,
+    loadError,
+    refreshStatus,
+    user,
+  } = useAuth();
   const { t } = useUiLanguage();
 
   useEffect(() => {
     useAgentChatStore.getState().setCurrentRoute(location.pathname);
   }, [location.pathname]);
+
+  useLayoutEffect(() => {
+    useAgentChatStore.getState().setGuestMode(guestMode && !loggedIn);
+  }, [guestMode, loggedIn]);
 
   if (location.pathname === '/admin' || location.pathname.startsWith('/admin/')) {
     return (
@@ -72,47 +95,63 @@ const AppContent: React.FC = () => {
     );
   }
 
-  if (authEnabled && !loggedIn) {
-    if (location.pathname === '/login') {
-      return (
-        <StandaloneRouteBoundary>
-          <LoginPage />
-        </StandaloneRouteBoundary>
-      );
-    }
+  if (location.pathname === '/login') {
+    if (loggedIn) return <Navigate to="/" replace />;
+    return (
+      <StandaloneRouteBoundary>
+        <LoginPage />
+      </StandaloneRouteBoundary>
+    );
+  }
+
+  if (authEnabled && !loggedIn && !guestMode) {
     const redirect = encodeURIComponent(location.pathname + location.search);
     return <Navigate to={`/login?redirect=${redirect}`} replace />;
   }
 
-  if (location.pathname === '/login') {
-    return <Navigate to="/" replace />;
-  }
+  const canConfigureSystem = !authEnabled || Boolean(
+    user && (user.permissions.includes('*') || user.permissions.includes('system.configure')),
+  );
 
-  const canConfigureSystem = !user
-    || user.permissions.includes('*')
-    || user.permissions.includes('system.configure');
+  const requireAuthenticated = (node: React.ReactNode, reason: string) => (
+    <AuthenticatedOnly reason={reason}>{node}</AuthenticatedOnly>
+  );
 
   return (
-    <Routes>
-      <Route
-        element={(
-          <Shell>
-            <RouteOutletBoundary />
-          </Shell>
-        )}
-      >
-        <Route path="/" element={<HomePage />} />
-        <Route path="/chat" element={<ChatPage />} />
-        <Route path="/portfolio" element={<PortfolioPage />} />
-        <Route path="/decision-signals" element={<DecisionSignalsPage />} />
-        <Route path="/screening" element={<StockScreeningPage />} />
-        <Route path="/backtest" element={<BacktestPage />} />
-        <Route path="/alerts" element={<AlertsPage />} />
-        <Route path="/usage" element={<TokenUsagePage />} />
-        <Route path="/settings" element={canConfigureSystem ? <SettingsPage /> : <Navigate to="/" replace />} />
-        <Route path="*" element={<NotFoundPage />} />
-      </Route>
-    </Routes>
+    <>
+      <Routes>
+        <Route
+          element={(
+            <Shell>
+              <RouteOutletBoundary />
+            </Shell>
+          )}
+        >
+          <Route path="/" element={<HomePage guestMode={guestMode && !loggedIn} />} />
+          <Route path="/chat" element={<ChatPage />} />
+          <Route path="/portfolio" element={<PortfolioPage guestMode={guestMode && !loggedIn} />} />
+          <Route
+            path="/decision-signals"
+            element={requireAuthenticated(
+              <DecisionSignalsPage />,
+              'AI 问股可直接体验；AI 建议记录、回测反馈与状态管理需要登录后保存到个人空间。',
+            )}
+          />
+          <Route path="/screening" element={<StockScreeningPage />} />
+          <Route path="/backtest" element={requireAuthenticated(<BacktestPage />, '回测结果会关联到个人工作区，请先登录。')} />
+          <Route path="/alerts" element={requireAuthenticated(<AlertsPage />, '预警规则需要持续保存并关联到你的账号，请先登录。')} />
+          <Route path="/usage" element={requireAuthenticated(<TokenUsagePage />, '用量统计属于账号数据，请先登录。')} />
+          <Route
+            path="/settings"
+            element={canConfigureSystem
+              ? <SettingsPage />
+              : requireAuthenticated(<Navigate to="/" replace />, '系统设置仅对有权限的登录用户开放。')}
+          />
+          <Route path="*" element={<NotFoundPage />} />
+        </Route>
+      </Routes>
+      <LoginRequiredDialog />
+    </>
   );
 };
 

@@ -7,15 +7,16 @@ import { UI_LANGUAGE_STORAGE_KEY } from './utils/uiLanguage';
 
 type AuthState = ReturnType<typeof AuthContext.useAuth>;
 
-const { chatPageShouldThrow, setCurrentRoute, useAgentChatStoreMock } = vi.hoisted(() => {
+const { chatPageShouldThrow, setCurrentRoute, setGuestMode, useAgentChatStoreMock } = vi.hoisted(() => {
   const setCurrentRoute = vi.fn();
+  const setGuestMode = vi.fn();
   const chatPageShouldThrow = { value: false };
   const state = { completionBadge: false };
   const useAgentChatStoreMock = Object.assign(
     vi.fn((selector?: (value: typeof state) => unknown) => (selector ? selector(state) : state)),
-    { getState: () => ({ setCurrentRoute }) },
+    { getState: () => ({ setCurrentRoute, setGuestMode }) },
   );
-  return { chatPageShouldThrow, setCurrentRoute, useAgentChatStoreMock };
+  return { chatPageShouldThrow, setCurrentRoute, setGuestMode, useAgentChatStoreMock };
 });
 
 vi.mock('./contexts/AuthContext', () => ({
@@ -77,6 +78,8 @@ function makeAuthState(overrides: Partial<AuthState> = {}): AuthState {
     authEnabled: false,
     authMode: 'disabled',
     loggedIn: false,
+    guestAccessEnabled: false,
+    guestMode: false,
     user: null,
     passwordSet: false,
     passwordChangeable: false,
@@ -86,6 +89,11 @@ function makeAuthState(overrides: Partial<AuthState> = {}): AuthState {
     login: vi.fn().mockResolvedValue({ success: true }),
     changePassword: vi.fn().mockResolvedValue({ success: true }),
     logout: vi.fn().mockResolvedValue(undefined),
+    enterGuestMode: vi.fn(),
+    exitGuestMode: vi.fn(),
+    loginPrompt: null,
+    requestLogin: vi.fn(),
+    dismissLoginPrompt: vi.fn(),
     refreshStatus: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
@@ -121,6 +129,59 @@ describe('App routing behavior', () => {
     expect(await screen.findByTestId('login-page')).toBeInTheDocument();
     expect(window.location.pathname).toBe('/login');
     expect(window.location.search).toBe('?redirect=%2Fportfolio');
+  });
+
+  it('opens the normal workspace in guest mode without a user session', async () => {
+    vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
+      authEnabled: true,
+      guestAccessEnabled: true,
+      guestMode: true,
+      loggedIn: false,
+      setupState: 'enabled',
+    }));
+    window.history.pushState({}, '', '/');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('home-page')).toBeInTheDocument();
+    expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
+    expect(setGuestMode).toHaveBeenCalledWith(true);
+  });
+
+  it('still requires login when guest access is not active', async () => {
+    vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
+      authEnabled: true,
+      guestAccessEnabled: false,
+      guestMode: false,
+      loggedIn: false,
+      setupState: 'enabled',
+    }));
+    window.history.pushState({}, '', '/portfolio');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('login-page')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/login');
+  });
+
+  it('prompts a guest before entering a personal-data route', async () => {
+    const requestLogin = vi.fn();
+    vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
+      authEnabled: true,
+      guestAccessEnabled: true,
+      guestMode: true,
+      loggedIn: false,
+      requestLogin,
+      setupState: 'enabled',
+    }));
+    window.history.pushState({}, '', '/decision-signals');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('home-page')).toBeInTheDocument();
+    expect(requestLogin).toHaveBeenCalledWith(
+      'AI 问股可直接体验；AI 建议记录、回测反馈与状态管理需要登录后保存到个人空间。',
+    );
   });
 
   it('renders the current route page after auth is ready', async () => {

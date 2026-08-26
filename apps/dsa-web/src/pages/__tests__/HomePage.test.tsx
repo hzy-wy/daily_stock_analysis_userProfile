@@ -5,6 +5,7 @@ import { analysisApi, DuplicateTaskError } from '../../api/analysis';
 import { agentApi } from '../../api/agent';
 import { historyApi } from '../../api/history';
 import { systemConfigApi } from '../../api/systemConfig';
+import { stocksApi } from '../../api/stocks';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
 import { useTaskStream } from '../../hooks/useTaskStream';
 import { useStockPoolStore } from '../../stores';
@@ -285,6 +286,24 @@ describe('HomePage', () => {
       nextStepKey: null,
       checks: [],
     });
+  });
+
+  it('shows the real market dashboard without loading private data in guest mode', async () => {
+    render(
+      <MemoryRouter>
+        <HomePage guestMode />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('market-dashboard')).toBeInTheDocument();
+    expect(stocksApi.getMarketDashboard).toHaveBeenCalled();
+    expect(agentApi.getSkills).toHaveBeenCalled();
+    expect(systemConfigApi.getSetupStatus).not.toHaveBeenCalled();
+    expect(systemConfigApi.getWatchlist).not.toHaveBeenCalled();
+    expect(historyApi.getList).not.toHaveBeenCalled();
+    expect(historyApi.getStockBarList).not.toHaveBeenCalled();
+    expect(analysisApi.getTasks).not.toHaveBeenCalled();
+    expect(useTaskStream).toHaveBeenCalledWith(expect.objectContaining({ enabled: false }));
   });
 
   it('opens the market dashboard by default while keeping the first report available in history', async () => {

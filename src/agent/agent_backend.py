@@ -63,6 +63,7 @@ class AgentRunRequest:
     stock_scope: Optional[StockScope]
     max_steps: int
     max_wall_clock_seconds: Optional[float]
+    persist_usage: bool = True
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
     cancel_event: Optional[threading.Event] = None
 
@@ -117,6 +118,7 @@ class LiteLLMAgentBackend(AgentBackend):
             progress_callback=request.progress_callback,
             max_wall_clock_seconds=request.max_wall_clock_seconds,
             stock_scope=request.stock_scope,
+            persist_usage=request.persist_usage,
         )
         usage = {"total_tokens": loop_result.total_tokens} if loop_result.total_tokens > 0 else None
         error_code = None

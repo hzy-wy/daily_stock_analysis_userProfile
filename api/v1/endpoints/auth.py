@@ -42,11 +42,11 @@ from src.services.identity_service import (
     get_identity_service,
     is_multi_user_mode,
 )
+from src.guest_access import is_guest_access_enabled
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
 
 class LoginRequest(BaseModel):
     """Login request body. For first-time setup use password + password_confirm."""
@@ -197,6 +197,7 @@ def _get_auth_status_dict(request: Request | None = None) -> dict:
     return {
         "authEnabled": auth_enabled,
         "loggedIn": logged_in,
+        "guestAccessEnabled": is_guest_access_enabled(),
         "passwordSet": _password_set_for_response(auth_enabled),
         "passwordChangeable": is_password_changeable() if auth_enabled else False,
         "setupState": setup_state,
@@ -220,6 +221,7 @@ async def auth_status(request: Request):
             "authEnabled": True,
             "authMode": "multi_user",
             "loggedIn": principal is not None,
+            "guestAccessEnabled": is_guest_access_enabled(),
             "passwordSet": owner_exists,
             "passwordChangeable": principal is not None,
             "setupState": "enabled" if owner_exists else "bootstrap_required",

@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from api.middlewares.auth import add_auth_middleware
-from api.middlewares.auth import AuthMiddleware
+from api.middlewares.auth import AuthMiddleware, _guest_path_allowed
 from api.v1.endpoints import admin, auth
 from src.auth import ADMIN_COOKIE_NAME, APP_COOKIE_NAME
 from src.config import Config
@@ -55,6 +55,14 @@ def multi_user_app(tmp_path):
     @app.post("/api/v1/system/mutate")
     async def system_mutation():
         return {"ok": True}
+
+    @app.get("/api/v1/stocks/{stock_code}/quote")
+    async def public_quote(stock_code: str):
+        return {"stockCode": stock_code, "price": 1}
+
+    @app.post("/api/v1/agent/chat/stream")
+    async def guest_chat(request: Request):
+        return {"guest": bool(getattr(request.state, "guest_access", False))}
 
     add_auth_middleware(app)
     try:
@@ -106,6 +114,41 @@ def test_logout_can_clear_an_expired_or_invalid_session_cookie(multi_user_app) -
         assert client.cookies.get(APP_COOKIE_NAME) is None
 
 
+def test_auth_status_exposes_guest_access_without_creating_a_session(
+    multi_user_app,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GUEST_ACCESS_ENABLED", "true")
+
+    with TestClient(multi_user_app) as client:
+        response = client.get("/api/v1/auth/status")
+
+        assert response.status_code == 200
+        assert response.json()["guestAccessEnabled"] is True
+        assert response.json()["loggedIn"] is False
+        assert response.json()["user"] is None
+        assert client.cookies.get(APP_COOKIE_NAME) is None
+
+
+def test_guest_allowlist_exposes_market_and_ephemeral_chat_but_not_private_data(
+    multi_user_app,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GUEST_ACCESS_ENABLED", "true")
+
+    with TestClient(multi_user_app) as client:
+        quote = client.get("/api/v1/stocks/AAPL/quote")
+        chat = client.post("/api/v1/agent/chat/stream", json={})
+        private = client.get("/api/v1/private")
+        portfolio = client.get("/api/v1/portfolio/accounts")
+
+    assert quote.status_code == 200
+    assert chat.status_code == 200
+    assert chat.json() == {"guest": True}
+    assert private.status_code == 401
+    assert portfolio.status_code == 401
+
+
 def test_member_cannot_create_admin_session_or_mutate_system(multi_user_app) -> None:
     with TestClient(multi_user_app) as client:
         assert client.post(
@@ -144,3 +187,18 @@ def test_feature_routes_map_to_atomic_permissions() -> None:
     assert AuthMiddleware._required_permission(
         "/api/v1/agent/chat", "POST"
     ) == "chat.use"
+    assert _guest_path_allowed(
+        "/api/v1/stocks/AAPL/quote", "GET"
+    ) is True
+    assert _guest_path_allowed(
+        "/api/v1/alphasift/hotspots/AI%E7%AE%97%E5%8A%9B", "GET"
+    ) is True
+    assert _guest_path_allowed(
+        "/api/v1/alphasift/screen/tasks", "POST"
+    ) is True
+    assert _guest_path_allowed(
+        "/api/v1/portfolio/accounts", "GET"
+    ) is False
+    assert _guest_path_allowed(
+        "/api/v1/alphasift/install", "POST"
+    ) is False

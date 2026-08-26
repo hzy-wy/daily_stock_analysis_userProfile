@@ -35,6 +35,9 @@ const Probe = () => {
     <div>
       <span data-testid="status">{auth.loggedIn ? 'logged-in' : 'logged-out'}</span>
       <span data-testid="password-set">{auth.passwordSet ? 'set' : 'unset'}</span>
+      <span data-testid="guest-access">{auth.guestAccessEnabled ? 'enabled' : 'disabled'}</span>
+      <span data-testid="guest-mode">{auth.guestMode ? 'active' : 'inactive'}</span>
+      <button type="button" onClick={auth.enterGuestMode}>enter-guest</button>
       <button type="button" onClick={() => void auth.login('passwd6', 'passwd6')}>
         trigger-login
       </button>
@@ -48,6 +51,7 @@ const Probe = () => {
 describe('AuthContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionStorage.clear();
   });
 
   it('refreshes auth state after a successful login', async () => {
@@ -126,6 +130,28 @@ describe('AuthContext', () => {
 
     await screen.findByTestId('status');
     expect(resetDashboardState).not.toHaveBeenCalled();
+  });
+
+  it('enters the server-controlled guest mode without creating a login session', async () => {
+    getStatus.mockResolvedValueOnce({
+      authEnabled: true,
+      loggedIn: false,
+      guestAccessEnabled: true,
+      passwordSet: true,
+      passwordChangeable: false,
+      setupState: 'enabled',
+    });
+
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByTestId('guest-access')).toHaveTextContent('enabled');
+    fireEvent.click(screen.getByRole('button', { name: 'enter-guest' }));
+    expect(screen.getByTestId('guest-mode')).toHaveTextContent('active');
+    expect(sessionStorage.getItem('dsa_guest_session')).toBe('active');
   });
 
   it('treats a 401 logout as already signed out after status refresh', async () => {

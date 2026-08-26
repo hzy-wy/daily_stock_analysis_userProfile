@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.auth import ADMIN_COOKIE_NAME, APP_COOKIE_NAME, COOKIE_NAME, is_auth_enabled, verify_session
+from src.guest_access import is_guest_access_enabled
 from src.request_context import reset_actor_context, set_actor_context
 from src.services.identity_service import (
     ADMIN_AUDIENCE,
@@ -43,11 +44,51 @@ MULTI_USER_LOGOUT_PATHS = frozenset({
     "/api/v1/admin/auth/logout",
 })
 
+GUEST_GET_EXACT_PATHS = frozenset({
+    "/api/v1/agent/models",
+    "/api/v1/agent/status",
+    "/api/v1/agent/skills",
+    "/api/v1/agent/strategies",
+    "/api/v1/stocks/market-dashboard",
+    "/api/v1/alphasift/status",
+    "/api/v1/alphasift/strategies",
+    "/api/v1/alphasift/hotspots",
+})
+
+GUEST_POST_EXACT_PATHS = frozenset({
+    "/api/v1/agent/chat/stream",
+    "/api/v1/alphasift/screen",
+    "/api/v1/alphasift/screen/tasks",
+})
+
 
 def _path_exempt(path: str) -> bool:
     """Check if path is exempt from auth."""
     normalized = path.rstrip("/") or "/"
     return normalized in EXEMPT_PATHS
+
+
+def _guest_path_allowed(path: str, method: str) -> bool:
+    """Allow only real-market reads and explicitly ephemeral guest actions."""
+
+    normalized = path.rstrip("/") or "/"
+    upper_method = method.upper()
+    if upper_method in {"GET", "HEAD", "OPTIONS"}:
+        if normalized in GUEST_GET_EXACT_PATHS:
+            return True
+        if normalized.startswith("/api/v1/alphasift/hotspots/"):
+            return True
+        if normalized.startswith("/api/v1/alphasift/screen/tasks/"):
+            return True
+        if normalized.startswith("/api/v1/stocks/"):
+            return normalized.endswith("/quote") or normalized.endswith("/history")
+        return False
+    if upper_method == "POST":
+        if normalized in GUEST_POST_EXACT_PATHS:
+            return True
+        if normalized.startswith("/api/v1/agent/chat/stream/") and normalized.endswith("/cancel"):
+            return True
+    return False
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -79,6 +120,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         cookie_val = request.cookies.get(COOKIE_NAME)
         if not cookie_val or not verify_session(cookie_val):
+            if is_guest_access_enabled() and _guest_path_allowed(path, request.method):
+                request.state.guest_access = True
+                return await call_next(request)
             return JSONResponse(
                 status_code=401,
                 content={
@@ -112,6 +156,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
         token = request.cookies.get(cookie_name)
         principal = service.principal_from_token(token or "", audience)
         if principal is None:
+            if (
+                not is_admin_path
+                and is_guest_access_enabled()
+                and _guest_path_allowed(request.url.path, request.method)
+            ):
+                request.state.guest_access = True
+                return await call_next(request)
             return JSONResponse(
                 status_code=401,
                 content={"error": "unauthorized", "message": "Login required"},

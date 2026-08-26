@@ -520,6 +520,31 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertEqual(result.total_tokens, 5)
         persist_usage.assert_called_once_with(usage, "openai/gpt-test", call_type="agent")
 
+    def test_run_agent_loop_keeps_usage_in_result_without_persisting_for_guest(self):
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        usage = {"total_tokens": 5}
+        adapter.call_with_tools.return_value = LLMResponse(
+            content="Done.",
+            tool_calls=[],
+            usage=usage,
+            provider="openai",
+            model="openai/gpt-test",
+        )
+
+        with patch("src.agent.runner._persist_usage") as persist_usage:
+            result = run_agent_loop(
+                messages=[{"role": "user", "content": "Analyze"}],
+                tool_registry=registry,
+                llm_adapter=adapter,
+                max_steps=1,
+                persist_usage=False,
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.total_tokens, 5)
+        persist_usage.assert_not_called()
+
     def test_run_agent_loop_blocks_conflicting_stock_scoped_tool_and_keeps_tool_result(self):
         executed_calls = []
         registry = _make_stock_registry(executed_calls)

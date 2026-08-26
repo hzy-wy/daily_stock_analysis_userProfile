@@ -468,12 +468,15 @@ daily_stock_analysis/
 
 ### 其他配置
 
-multi_user 启用步骤：先设置 `AUTH_MODE=multi_user`，再在服务器受信任终端执行 `python -m src.auth bootstrap_owner --username owner`，随后分别使用 `/login`（产品工作台）和 `/admin/login`（管理后台）。管理员从后台生成邀请，受邀者通过 `/accept-invite?token=...` 设置自己的密码。数据库用户忘记密码时，在受信任终端执行 `python -m src.auth reset_user_password --username <登录名>`，成功后该用户全部既有 Session 会被吊销。上线前备份、全新/legacy/Docker 三种启用路径、代理安全、逐模块验收与回滚见[多用户登录与权限启用指南](multi-user-auth-deployment-guide.md)，产品和数据模型见[多用户身份、登录与权限体系 PRD](multi-user-auth-rbac-prd.md)。
+multi_user 启用步骤：先设置 `AUTH_MODE=multi_user`，再在服务器受信任终端执行 `python -m src.auth bootstrap_owner --username owner`，随后分别使用 `/login`（产品工作台）和 `/admin/login`（管理后台）。管理员从后台生成邀请，受邀者通过 `/accept-invite?token=...` 设置自己的密码。小范围开放体验时，可设 `GUEST_ACCESS_ENABLED=true`，访客从 `/login` 进入同一套正式工作台，读取真实公开行情并使用不落库的临时 AI 问答；创建持仓账户、保存自选等个人数据操作仍要求登录，没有独立 `/demo` 页面。数据库用户忘记密码时，在受信任终端执行 `python -m src.auth reset_user_password --username <登录名>`，成功后该用户全部既有 Session 会被吊销。日常入口、角色、邀请注册、登录与账号运维见[多用户账号与登录统一使用说明](multi-user-auth-user-guide.md)；上线前备份、全新/legacy/Docker 三种启用路径、代理安全、逐模块验收与回滚见[多用户登录与权限启用指南](multi-user-auth-deployment-guide.md)，产品和数据模型见[多用户身份、登录与权限体系 PRD](multi-user-auth-rbac-prd.md)。
 
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
 | `STOCK_LIST` | 系统定时分析股票代码（逗号分隔）。legacy/disabled 模式下也作为 Web 自选；multi_user 模式下 Web 自选改为用户级，升级时仅一次性复制给首任 Owner | - |
 | `AUTH_MODE` | 身份模式：`disabled` / `legacy` / `multi_user`。不配置时继续从 `ADMIN_AUTH_ENABLED` 推导，避免旧部署行为变化 | 未配置 |
+| `GUEST_ACCESS_ENABLED` | 是否在登录页开放同工作台游客入口；公开真实行情与临时 AI 可用，个人数据操作仍要求登录 | `false` |
+| `GUEST_AI_REQUESTS_PER_HOUR` | 单个来源 IP 每小时允许的游客 AI 请求数（进程内限流） | `20` |
+| `GUEST_AI_MAX_HISTORY_MESSAGES` | 游客每次 AI 请求可携带的浏览器临时上下文条数 | `10` |
 | `ADMIN_AUTH_ENABLED` | 旧版共享密码开关，仅在未显式配置 `AUTH_MODE` 时生效；legacy 模式忘记密码执行 `python -m src.auth reset_password` | `false` |
 | `USER_SESSION_MAX_AGE_HOURS` / `USER_SESSION_IDLE_MINUTES` | multi_user 普通工作台 Session 的绝对/空闲有效期 | `24` / `480` |
 | `ADMIN_SESSION_MAX_AGE_HOURS` / `ADMIN_SESSION_IDLE_MINUTES` | multi_user 管理后台 Session 的绝对/空闲有效期；与工作台 Cookie 互不覆盖 | `4` / `30` |

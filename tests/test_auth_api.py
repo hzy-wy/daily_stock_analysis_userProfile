@@ -39,6 +39,7 @@ class AuthApiTestCase(unittest.TestCase):
 
     def setUp(self) -> None:
         _reset_auth_globals()
+        self.original_auth_mode = os.environ.get("AUTH_MODE")
         self.temp_dir = tempfile.TemporaryDirectory()
         self.data_dir = Path(self.temp_dir.name)
         self.env_path = self.data_dir / ".env"
@@ -48,6 +49,7 @@ class AuthApiTestCase(unittest.TestCase):
         )
         os.environ["ENV_FILE"] = str(self.env_path)
         os.environ["DATABASE_PATH"] = str(self.data_dir / "test.db")
+        os.environ["AUTH_MODE"] = "legacy"
         Config.reset_instance()
 
         self.auth_patcher = patch.object(auth, "_is_auth_enabled_from_env", return_value=True)
@@ -61,6 +63,10 @@ class AuthApiTestCase(unittest.TestCase):
         Config.reset_instance()
         os.environ.pop("ENV_FILE", None)
         os.environ.pop("DATABASE_PATH", None)
+        if self.original_auth_mode is None:
+            os.environ.pop("AUTH_MODE", None)
+        else:
+            os.environ["AUTH_MODE"] = self.original_auth_mode
         self.temp_dir.cleanup()
 
     def _read_auth_enabled_from_env(self) -> bool:

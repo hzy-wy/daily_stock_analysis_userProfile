@@ -4,6 +4,7 @@ export type AuthStatusResponse = {
   authEnabled: boolean;
   authMode?: 'disabled' | 'legacy' | 'multi_user';
   loggedIn: boolean;
+  guestAccessEnabled?: boolean;
   passwordSet?: boolean;
   passwordChangeable?: boolean;
   setupState: 'enabled' | 'password_retained' | 'no_password' | 'bootstrap_required';

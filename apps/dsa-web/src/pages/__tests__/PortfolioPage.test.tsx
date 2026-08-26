@@ -6,6 +6,7 @@ import { createApiError, createParsedApiError } from '../../api/error';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
 import type { DecisionSignalItem } from '../../types/decisionSignals';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
+import { LOGIN_REQUIRED_EVENT } from '../../utils/guestAccess';
 import PortfolioPage from '../PortfolioPage';
 
 const {
@@ -425,6 +426,31 @@ describe('PortfolioPage FX refresh', () => {
       </UiLanguageProvider>,
     );
   }
+
+  it('keeps the formal portfolio page but requires login before creating guest data', async () => {
+    const loginRequired = vi.fn();
+    window.addEventListener(LOGIN_REQUIRED_EVENT, loginRequired);
+
+    try {
+      render(<PortfolioPage guestMode />);
+
+      expect(await screen.findByRole('heading', { name: '新建账户' })).toBeInTheDocument();
+      expect(getAccounts).not.toHaveBeenCalled();
+      expect(getSnapshot).not.toHaveBeenCalled();
+      expect(getRisk).not.toHaveBeenCalled();
+      expect(listTrades).not.toHaveBeenCalled();
+
+      fireEvent.change(screen.getByPlaceholderText('账户名称（必填）'), {
+        target: { value: '游客测试账户' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: '创建账户' }));
+
+      expect(loginRequired).toHaveBeenCalledTimes(1);
+      expect(createAccount).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(LOGIN_REQUIRED_EVENT, loginRequired);
+    }
+  });
 
   it('uses realtime portfolio valuation for page snapshot and risk loads', async () => {
     render(<PortfolioPage />);

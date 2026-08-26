@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import LoginPage from '../LoginPage';
 
@@ -76,5 +77,28 @@ describe('LoginPage', () => {
 
     expect(pageRoot).not.toBeNull();
     expect(pageRoot?.getAttribute('style') ?? '').not.toContain('--login-bg-main');
+  });
+
+  it('enters the normal workspace as a guest when the server enables it', () => {
+    const enterGuestMode = vi.fn();
+    useAuthMock.mockReturnValue({
+      authMode: 'multi_user',
+      guestAccessEnabled: true,
+      enterGuestMode,
+      login: vi.fn(),
+      passwordSet: true,
+      setupState: 'enabled',
+    });
+
+    render(
+      <MemoryRouter>
+        <LoginPage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '进入游客体验' }));
+    expect(enterGuestMode).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith('/settings', { replace: true });
+    expect(screen.getByText('查看真实行情', { exact: false })).toBeInTheDocument();
   });
 });

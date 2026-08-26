@@ -3,11 +3,19 @@ import { createContext, useCallback, useContext, useEffect, useState } from 'rea
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { authApi } from '../api/auth';
 import { useStockPoolStore } from '../stores';
+import {
+  GUEST_SESSION_STORAGE_KEY,
+  LOGIN_REQUIRED_EVENT,
+  isGuestSessionActive,
+  setGuestSessionActive,
+} from '../utils/guestAccess';
 
 type AuthContextValue = {
   authEnabled: boolean;
   authMode: 'disabled' | 'legacy' | 'multi_user';
   loggedIn: boolean;
+  guestAccessEnabled: boolean;
+  guestMode: boolean;
   user: {
     id: string;
     displayName: string;
@@ -30,6 +38,11 @@ type AuthContextValue = {
     newPasswordConfirm: string
   ) => Promise<{ success: boolean; error?: ParsedApiError }>;
   logout: () => Promise<void>;
+  enterGuestMode: () => void;
+  exitGuestMode: () => void;
+  loginPrompt: { reason?: string } | null;
+  requestLogin: (reason?: string) => void;
+  dismissLoginPrompt: () => void;
   refreshStatus: () => Promise<void>;
 };
 
@@ -53,6 +66,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [authEnabled, setAuthEnabled] = useState(false);
   const [authMode, setAuthMode] = useState<'disabled' | 'legacy' | 'multi_user'>('disabled');
   const [loggedIn, setLoggedIn] = useState(false);
+  const [guestAccessEnabled, setGuestAccessEnabled] = useState(false);
+  const [guestMode, setGuestMode] = useState(isGuestSessionActive);
+  const [loginPrompt, setLoginPrompt] = useState<{ reason?: string } | null>(null);
   const [user, setUser] = useState<AuthContextValue['user']>(null);
   const [passwordSet, setPasswordSet] = useState(false);
   const [passwordChangeable, setPasswordChangeable] = useState(false);
@@ -68,11 +84,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setAuthEnabled(status.authEnabled);
       setAuthMode(status.authMode ?? (status.authEnabled ? 'legacy' : 'disabled'));
       setLoggedIn(status.loggedIn);
+      const nextGuestAccessEnabled = status.guestAccessEnabled ?? false;
+      setGuestAccessEnabled(nextGuestAccessEnabled);
       setUser(status.user ?? null);
       setPasswordSet(status.passwordSet ?? false);
       setPasswordChangeable(status.passwordChangeable ?? false);
       setSetupState(status.setupState ?? (status.authEnabled ? 'enabled' : 'no_password'));
-      if (status.authEnabled && !status.loggedIn) {
+      if (status.loggedIn || !nextGuestAccessEnabled) {
+        setGuestSessionActive(false);
+        setGuestMode(false);
+      } else {
+        setGuestMode(isGuestSessionActive());
+      }
+      if (status.authEnabled && !status.loggedIn && !isGuestSessionActive()) {
         useStockPoolStore.getState().resetDashboardState();
       }
     } catch (err) {
@@ -80,6 +104,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setAuthEnabled(false);
       setAuthMode('disabled');
       setLoggedIn(false);
+      setGuestAccessEnabled(false);
+      setGuestSessionActive(false);
+      setGuestMode(false);
       setUser(null);
       setPasswordSet(false);
       setPasswordChangeable(false);
@@ -94,6 +121,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     void fetchStatus();
   }, [fetchStatus]);
 
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === GUEST_SESSION_STORAGE_KEY) {
+        setGuestMode(guestAccessEnabled && event.newValue === 'active');
+      }
+    };
+    const handleLoginRequired = (event: Event) => {
+      const customEvent = event as CustomEvent<{ reason?: string }>;
+      setLoginPrompt({ reason: customEvent.detail?.reason });
+    };
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener(LOGIN_REQUIRED_EVENT, handleLoginRequired);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener(LOGIN_REQUIRED_EVENT, handleLoginRequired);
+    };
+  }, [guestAccessEnabled]);
+
   const login = useCallback(
     async (
       password: string,
@@ -102,6 +147,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     ): Promise<{ success: boolean; error?: ParsedApiError }> => {
       try {
         await authApi.login(password, passwordConfirm, identifier);
+        setGuestSessionActive(false);
+        setGuestMode(false);
+        setLoginPrompt(null);
         await fetchStatus();
         return { success: true };
       } catch (err: unknown) {
@@ -142,12 +190,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [fetchStatus]);
 
+  const enterGuestMode = useCallback(() => {
+    if (!guestAccessEnabled) return;
+    setGuestSessionActive(true);
+    setGuestMode(true);
+    setLoginPrompt(null);
+    useStockPoolStore.getState().resetDashboardState();
+  }, [guestAccessEnabled]);
+
+  const exitGuestMode = useCallback(() => {
+    setGuestSessionActive(false);
+    setGuestMode(false);
+    setLoginPrompt(null);
+    useStockPoolStore.getState().resetDashboardState();
+  }, []);
+
+  const requestLogin = useCallback((reason?: string) => {
+    setLoginPrompt({ reason: reason?.trim() || undefined });
+  }, []);
+
+  const dismissLoginPrompt = useCallback(() => setLoginPrompt(null), []);
+
   return (
     <AuthContext.Provider
       value={{
         authEnabled,
         authMode,
         loggedIn,
+        guestAccessEnabled,
+        guestMode,
         user,
         passwordSet,
         passwordChangeable,
@@ -157,6 +228,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         login,
         changePassword,
         logout,
+        enterGuestMode,
+        exitGuestMode,
+        loginPrompt,
+        requestLogin,
+        dismissLoginPrompt,
         refreshStatus: fetchStatus,
       }}
     >

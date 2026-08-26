@@ -79,8 +79,13 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         return Config(alphasift_enabled=enabled, alphasift_install_spec=install_spec)
 
     @staticmethod
-    def _request(cookies=None) -> SimpleNamespace:
-        return SimpleNamespace(cookies=cookies or {})
+    def _request(cookies=None, *, guest: bool = False) -> SimpleNamespace:
+        return SimpleNamespace(
+            cookies=cookies or {},
+            state=SimpleNamespace(guest_access=guest),
+            client=SimpleNamespace(host="127.0.0.1"),
+            headers={},
+        )
 
     def _screen(self, config: Config, *, mock_enrichment: bool = True, **kwargs):
         if not mock_enrichment:
@@ -115,11 +120,61 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         return alphasift_endpoint.alphasift_hotspots(config=config, **kwargs)
 
     def _hotspot_detail(self, config: Config, **kwargs):
+        request = kwargs.pop("request", self._request())
         if os.environ.get("ALPHASIFT_DATA_DIR"):
-            return alphasift_endpoint.alphasift_hotspot_detail(config=config, **kwargs)
+            return alphasift_endpoint.alphasift_hotspot_detail(request=request, config=config, **kwargs)
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(os.environ, {"ALPHASIFT_DATA_DIR": str(Path(tmpdir) / "alphasift")}, clear=False):
-                return alphasift_endpoint.alphasift_hotspot_detail(config=config, **kwargs)
+                return alphasift_endpoint.alphasift_hotspot_detail(request=request, config=config, **kwargs)
+
+    def test_guest_screen_rate_limit_blocks_sync_work_before_service_call(self) -> None:
+        config = self._config(enabled=True)
+        with (
+            patch("api.v1.endpoints.alphasift.consume_guest_ai_quota", return_value=(False, 0)),
+            patch("api.v1.endpoints.alphasift._service") as service,
+            self.assertRaises(HTTPException) as caught,
+        ):
+            alphasift_endpoint.alphasift_screen(
+                alphasift_endpoint.AlphaSiftScreenRequest(),
+                http_request=self._request(guest=True),
+                config=config,
+            )
+
+        self.assertEqual(caught.exception.status_code, 429)
+        self.assertEqual(caught.exception.detail["error"], "guest_ai_rate_limited")
+        service.assert_not_called()
+
+    def test_guest_screen_rate_limit_blocks_background_task_before_submission(self) -> None:
+        config = self._config(enabled=True)
+        with (
+            patch("api.v1.endpoints.alphasift.consume_guest_ai_quota", return_value=(False, 0)),
+            patch("api.v1.endpoints.alphasift.get_task_queue") as get_queue,
+            self.assertRaises(HTTPException) as caught,
+        ):
+            alphasift_endpoint.alphasift_start_screen_task(
+                alphasift_endpoint.AlphaSiftScreenRequest(),
+                http_request=self._request(guest=True),
+                config=config,
+            )
+
+        self.assertEqual(caught.exception.status_code, 429)
+        get_queue.assert_not_called()
+
+    def test_guest_hotspot_detail_shares_ai_rate_limit(self) -> None:
+        config = self._config(enabled=True)
+        with (
+            patch("api.v1.endpoints.alphasift.consume_guest_ai_quota", return_value=(False, 0)),
+            patch("api.v1.endpoints.alphasift._service") as service,
+            self.assertRaises(HTTPException) as caught,
+        ):
+            alphasift_endpoint.alphasift_hotspot_detail(
+                "AI算力",
+                request=self._request(guest=True),
+                config=config,
+            )
+
+        self.assertEqual(caught.exception.status_code, 429)
+        service.assert_not_called()
 
     def test_default_install_spec_is_commit_pinned(self) -> None:
         self.assertRegex(

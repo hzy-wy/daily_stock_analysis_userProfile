@@ -11,6 +11,7 @@
 | 配置大模型渠道 | [LLM 配置指南](LLM_CONFIG_GUIDE.md) | [LLM 服务商配置指南](llm-providers.md) |
 | 配置推送通知 | [通知能力基线](notifications.md) | [完整配置与部署指南](full-guide.md) |
 | 部署到服务器或云平台 | [部署指南](DEPLOY.md) | [云端 WebUI 部署](deploy-webui-cloud.md)、[Zeabur 部署](docker/zeabur-deployment.md) |
+| 启用和使用多人账号 | [多用户账号与登录统一使用说明](multi-user-auth-user-guide.md) | [多用户登录与权限启用指南](multi-user-auth-deployment-guide.md) |
 | 使用 Bot / IM 接入 | [Bot 命令与接入](bot-command.md) | [Bot 平台配置](bot/) |
 | 排查运行问题 | [FAQ](FAQ.md) | [更新日志](CHANGELOG.md) |
 | 处理数据源失败或降级 | [数据源稳定性与故障处理图示](data-source-stability.md) | [FAQ](FAQ.md) |
@@ -45,6 +46,7 @@
 | [Bot 平台配置](bot/) | 飞书、钉钉、Discord 等 Bot 配置截图和补充说明 |
 | [实时告警中心](alerts.md) | EventMonitor 基线、Web 规则管理、通知结果、冷却状态和 Phase 边界 |
 | [DecisionSignal 决策信号专题](decision-signals.md) | AI 建议池字段语义、API、Web 展示、告警/通知/组合风险联动、后验评估、脱敏、迁移与回滚 |
+| [多用户账号与登录统一使用说明](multi-user-auth-user-guide.md) | 核心入口、同工作台游客体验、角色、Owner 初始化、邀请注册、登录、账号运维、数据隔离和常见报错 |
 | [多用户身份、登录与权限体系 PRD](multi-user-auth-rbac-prd.md) | 用户群体、双登录入口、RBAC、数据归属、数据库表、迁移与验收标准 |
 | [多用户登录与权限启用指南](multi-user-auth-deployment-guide.md) | 备份、全新/旧版/Docker 启用、Owner 与邀请、代理安全、逐模块验收、排障和回滚 |
 | [资讯 / 情报源](intelligence-sources.md) | RSS/Atom 合规资讯源配置、测试、拉取、去重、存储、查询与安全边界 |

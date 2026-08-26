@@ -40,6 +40,7 @@ import type {
 import type { RunFlowSnapshotSource } from '../types/runFlow';
 import { getTodayInShanghai } from '../utils/format';
 import { normalizeStockCode } from '../utils/stockCode';
+import { dispatchLoginRequired } from '../utils/guestAccess';
 
 type MarketReviewNotice = {
   variant: 'success' | 'warning' | 'danger';
@@ -178,7 +179,11 @@ async function getTodayAnalysisItems(dateKey: string): Promise<StockBarItem[]> {
   return items;
 }
 
-const HomePage: React.FC = () => {
+type HomePageProps = {
+  guestMode?: boolean;
+};
+
+const HomePage: React.FC<HomePageProps> = ({ guestMode = false }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const { language: uiLanguage, t } = useUiLanguage();
@@ -323,6 +328,10 @@ const HomePage: React.FC = () => {
   }, [t]);
 
   useEffect(() => {
+    if (guestMode) {
+      setSetupStatus(null);
+      return undefined;
+    }
     let active = true;
     systemConfigApi.getSetupStatus()
       .then((status) => {
@@ -339,7 +348,7 @@ const HomePage: React.FC = () => {
     return () => {
       active = false;
     };
-  }, []);
+  }, [guestMode]);
 
   useEffect(() => {
     let active = true;
@@ -534,6 +543,7 @@ const HomePage: React.FC = () => {
     removeTask,
     onDashboardDataRefresh: handleDashboardDataRefresh,
     onCompletedTaskDataRefreshed: handleCompletedTaskDataRefreshed,
+    enabled: !guestMode,
   });
 
   useEffect(() => {
@@ -546,7 +556,10 @@ const HomePage: React.FC = () => {
     }
   }, [isLoadingStockBar, stockBarItems.length]);
 
-  const watchlistState = useWatchlist();
+  const watchlistState = useWatchlist({
+    enabled: !guestMode,
+    onLoginRequired: dispatchLoginRequired,
+  });
   const watchlistCodesByNormalized = useMemo(() => {
     const codesByNormalized = new Map<string, string>();
     for (const code of watchlistState.watchlistCodes) {
@@ -702,6 +715,10 @@ const HomePage: React.FC = () => {
       stockName?: string,
       selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image',
     ) => {
+      if (guestMode) {
+        dispatchLoginRequired('正式分析会生成并保存报告，请先登录；游客可使用右下角 AI 问股进行即时分析。');
+        return;
+      }
       setSidebarWorkspaceTab('history');
       void submitAnalysis({
         stockCode,
@@ -711,7 +728,7 @@ const HomePage: React.FC = () => {
         skills: selectedAnalysisSkills,
       });
     },
-    [query, selectedAnalysisSkills, submitAnalysis],
+    [guestMode, query, selectedAnalysisSkills, submitAnalysis],
   );
 
   const handleWorkspaceTabChange = useCallback((tab: HomeWorkspaceTab) => {
@@ -906,6 +923,10 @@ const HomePage: React.FC = () => {
   );
 
   const handleTriggerMarketReview = useCallback(async (regionOverride?: MarketReviewRegion[]) => {
+    if (guestMode) {
+      dispatchLoginRequired('生成大盘复盘会创建并保存分析报告，请先登录。');
+      return;
+    }
     setIsSubmittingMarketReview(true);
     setMarketReviewNotice(null);
     setMarketReviewError(null);
@@ -937,11 +958,11 @@ const HomePage: React.FC = () => {
     } finally {
       setIsSubmittingMarketReview(false);
     }
-  }, [marketReviewRegionOverride, notify, pollMarketReviewStatus, scrollMarketReviewFeedbackIntoView, t]);
+  }, [guestMode, marketReviewRegionOverride, notify, pollMarketReviewStatus, scrollMarketReviewFeedbackIntoView, t]);
 
   const todayDateKey = getTodayInShanghai();
   useEffect(() => {
-    if (sidebarWorkspaceTab !== 'today') {
+    if (guestMode || sidebarWorkspaceTab !== 'today') {
       return undefined;
     }
 
@@ -970,7 +991,7 @@ const HomePage: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [sidebarWorkspaceTab, todayAnalysisRefreshVersion, todayDateKey]);
+  }, [guestMode, sidebarWorkspaceTab, todayAnalysisRefreshVersion, todayDateKey]);
 
   const activeTaskByCode = useMemo(() => {
     const tasksByCode = new Map<string, TaskInfo>();
@@ -1083,6 +1104,10 @@ const HomePage: React.FC = () => {
   }, [todayDateKey, todayHistoryItems]);
 
   const handleAnalyzeWatchlist = useCallback(async (mode: WatchlistAnalyzeMode) => {
+    if (guestMode) {
+      dispatchLoginRequired('批量分析会生成并保存个人报告，请先登录。');
+      return;
+    }
     if (mode === 'pending' && watchlistTodayStatusBlocked) {
       setBatchAnalyzeStatus({
         variant: 'warning',
@@ -1190,6 +1215,7 @@ const HomePage: React.FC = () => {
       setIsBatchAnalyzingWatchlist(false);
     }
   }, [
+    guestMode,
     notify,
     pendingWatchlistCodes,
     refreshActiveTasks,

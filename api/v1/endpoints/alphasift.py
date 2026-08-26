@@ -11,7 +11,9 @@ from pydantic import BaseModel, Field
 
 from api.deps import get_config_dep
 from api.v1.errors import api_error
+from src.auth import get_client_ip
 from src.config import Config
+from src.guest_access import consume_guest_ai_quota
 from src.services.alphasift_service import AlphaSiftService
 from src.services.task_queue import TaskStatus as QueueTaskStatus
 from src.services.task_queue import get_task_queue
@@ -69,6 +71,23 @@ def _screening_task_not_found(task_id: str) -> HTTPException:
     )
 
 
+def _enforce_guest_ai_quota(request: Request) -> None:
+    """Share the anonymous AI allowance across Chat and AlphaSift actions."""
+
+    if not bool(getattr(getattr(request, "state", None), "guest_access", False)):
+        return
+    allowed, _remaining = consume_guest_ai_quota(get_client_ip(request))
+    if allowed:
+        return
+    raise HTTPException(
+        status_code=429,
+        detail={
+            "error": "guest_ai_rate_limited",
+            "message": "游客 AI 体验次数已达当前小时上限，请稍后再试或登录账号",
+        },
+    )
+
+
 @router.get("/status")
 def alphasift_status(config: Config = Depends(get_config_dep)) -> Dict[str, Any]:
     return _service(config).status()
@@ -107,10 +126,12 @@ def alphasift_hotspots(
 @router.get("/hotspots/{topic:path}")
 def alphasift_hotspot_detail(
     topic: str,
+    request: Request,
     provider: str = Query("", max_length=32),
     refresh: bool = Query(False),
     config: Config = Depends(get_config_dep),
 ) -> Dict[str, Any]:
+    _enforce_guest_ai_quota(request)
     refresh_value = refresh if isinstance(refresh, bool) else bool(getattr(refresh, "default", False))
     return _service(config).hotspot_detail(topic=topic, provider=provider, refresh=refresh_value)
 
@@ -129,6 +150,7 @@ def alphasift_start_screen_task(
     http_request: Request,
     config: Config = Depends(get_config_dep),
 ) -> AlphaSiftScreenAccepted:
+    _enforce_guest_ai_quota(http_request)
     task_id = uuid.uuid4().hex
     task_queue = get_task_queue()
 
@@ -194,6 +216,7 @@ def alphasift_screen(
     http_request: Request,
     config: Config = Depends(get_config_dep),
 ) -> Dict[str, Any]:
+    _enforce_guest_ai_quota(http_request)
     return _service(config).screen(
         strategy=request.strategy,
         market=request.market,

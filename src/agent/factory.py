@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # Module-level caches
 # ---------------------------------------------------------------------------
 _TOOL_REGISTRY = None
+_GUEST_TOOL_REGISTRY = None
 _SKILL_MANAGER_PROTOTYPE = None
 # Sentinel used as initial value so None (i.e. no custom dir) compares as "changed"
 # on the very first call, forcing a build rather than accidentally skipping it.
@@ -193,6 +194,42 @@ def get_tool_registry():
     _TOOL_REGISTRY = registry
     logger.info("[AgentFactory] ToolRegistry cached (%d tools)", len(registry._tools) if hasattr(registry, "_tools") else -1)
     return _TOOL_REGISTRY
+
+
+def get_guest_tool_registry():
+    """Return the anonymous read-only market tool surface.
+
+    Database-backed analysis history, portfolio, and backtest tools are
+    deliberately absent so a guest cannot read another user's assets.
+    """
+
+    global _GUEST_TOOL_REGISTRY
+    if _GUEST_TOOL_REGISTRY is not None:
+        return _GUEST_TOOL_REGISTRY
+
+    from src.agent.tools.registry import ToolRegistry
+
+    allowed = frozenset({
+        "get_realtime_quote",
+        "get_daily_history",
+        "get_chip_distribution",
+        "get_stock_info",
+        "get_capital_flow",
+        "analyze_trend",
+        "calculate_ma",
+        "get_volume_analysis",
+        "analyze_pattern",
+        "search_stock_news",
+        "search_comprehensive_intel",
+        "get_market_indices",
+        "get_sector_rankings",
+    })
+    registry = ToolRegistry()
+    for tool_def in get_tool_registry().list_tools():
+        if tool_def.name in allowed:
+            registry.register(tool_def)
+    _GUEST_TOOL_REGISTRY = registry
+    return _GUEST_TOOL_REGISTRY
 
 
 def get_skill_manager(config=None):
@@ -365,7 +402,12 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
     )
 
 
-def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
+def build_agent_chat_executor(
+    config=None,
+    skills: Optional[List[str]] = None,
+    *,
+    guest: bool = False,
+):
     """Build the backend-neutral executor used only by Agent Chat endpoints."""
     if config is None:
         from src.config import get_config
@@ -386,10 +428,10 @@ def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
             "unsupported_agent_arch",
             "Codex Agent currently supports single-agent Chat only",
         )
-    if backend_id == "litellm" and arch == "multi":
+    if backend_id == "litellm" and arch == "multi" and not guest:
         return build_agent_executor(config, skills=skills)
 
-    registry = get_tool_registry()
+    registry = get_guest_tool_registry() if guest else get_tool_registry()
     prompt_state = resolve_skill_prompt_state(config, skills=skills)
     if backend_id == "litellm":
         from src.agent.llm_adapter import LLMToolAdapter

@@ -31,6 +31,7 @@ import { findMatchingStockCode, includesStockCode, normalizeStockCode } from '..
 import { useStockIndex } from '../hooks/useStockIndex';
 import type { StockIndexItem } from '../types/stockIndex';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
+import { dispatchLoginRequired, isGuestSessionActive } from '../utils/guestAccess';
 
 // Quick question examples shown on empty state
 type ActiveStockContext = Pick<ChatFollowUpContext, 'stock_code' | 'stock_name'>;
@@ -284,6 +285,10 @@ const ChatPage: React.FC<ChatPageProps> = ({ variant = 'page' }) => {
   }, []);
 
   const loadWatchlist = useCallback(async () => {
+    if (isGuestSessionActive()) {
+      setWatchlistCodes([]);
+      return;
+    }
     try {
       const codes = await systemConfigApi.getWatchlist();
       if (isMountedRef.current) {
@@ -306,6 +311,10 @@ const ChatPage: React.FC<ChatPageProps> = ({ variant = 'page' }) => {
   const handleToggleWatchlist = useCallback(
     async (stockCode: string) => {
       if (!stockCode || isWatchlistActioning) return;
+      if (isGuestSessionActive()) {
+        dispatchLoginRequired('自选股会保存到个人工作区，请先登录。');
+        return;
+      }
       setIsWatchlistActioning(true);
       setWatchlistMessage(null);
       try {
@@ -355,6 +364,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ variant = 'page' }) => {
     stopping,
     terminalStatus,
     stopError,
+    guestMode,
     loadSessions,
     loadInitialSession,
     switchSession,
@@ -967,7 +977,9 @@ const ChatPage: React.FC<ChatPageProps> = ({ variant = 'page' }) => {
           <DashboardStateBlock
             compact
             title="暂无历史对话"
-            description="开始提问后，这里会保留会话记录。"
+            description={guestMode
+              ? '游客对话仅保留在当前页面内，刷新或离开游客模式后会清空。'
+              : '开始提问后，这里会保留会话记录。'}
             className="rounded-2xl border border-dashed border-border/50 bg-surface/30"
           />
         ) : (
@@ -1164,6 +1176,10 @@ const ChatPage: React.FC<ChatPageProps> = ({ variant = 'page' }) => {
                       disabled={sending}
                       onClick={async () => {
                         if (sending) return;
+                        if (guestMode) {
+                          dispatchLoginRequired('发送到机器人或邮箱属于账号操作，请先登录。');
+                          return;
+                        }
                         setSending(true);
                         setSendToast(null);
                         try {

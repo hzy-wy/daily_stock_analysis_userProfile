@@ -24,6 +24,7 @@ export interface ChatStreamRequest extends ChatRequest {
   session_id?: string;
   request_id?: string;
   context?: unknown;
+  history?: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
 export interface CancelChatStreamResponse {

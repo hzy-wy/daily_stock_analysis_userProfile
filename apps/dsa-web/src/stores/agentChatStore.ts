@@ -126,10 +126,12 @@ interface AgentChatState {
   stopping: boolean;
   terminalStatus: StreamTerminalStatus;
   stopError: boolean;
+  guestMode: boolean;
 }
 
 interface AgentChatActions {
   setCurrentRoute: (path: string) => void;
+  setGuestMode: (enabled: boolean) => void;
   clearCompletionBadge: () => void;
   loadSessions: () => Promise<void>;
   loadInitialSession: () => Promise<void>;
@@ -173,12 +175,40 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
   stopping: false,
   terminalStatus: null,
   stopError: false,
+  guestMode: false,
 
   setCurrentRoute: (path) => set({ currentRoute: path }),
+
+  setGuestMode: (enabled) => {
+    const state = get();
+    if (state.guestMode === enabled) return;
+    state.abortController?.abort();
+    set({
+      guestMode: enabled,
+      messages: [],
+      sessionId: enabled ? generateUUID() : getInitialSessionId(),
+      sessions: [],
+      sessionsLoading: false,
+      hasInitialLoad: false,
+      loading: false,
+      progressSteps: [],
+      chatError: null,
+      abortController: null,
+      activeRequestId: null,
+      serverCancellation: false,
+      stopping: false,
+      terminalStatus: null,
+      stopError: false,
+    });
+  },
 
   clearCompletionBadge: () => set({ completionBadge: false }),
 
   loadSessions: async () => {
+    if (get().guestMode) {
+      set({ sessions: [], sessionsLoading: false });
+      return;
+    }
     set({ sessionsLoading: true });
     try {
       const sessions = await agentApi.getChatSessions();
@@ -191,8 +221,12 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
   },
 
   loadInitialSession: async () => {
-    const { hasInitialLoad } = get();
+    const { guestMode, hasInitialLoad } = get();
     if (hasInitialLoad) return;
+    if (guestMode) {
+      set({ hasInitialLoad: true, sessions: [], sessionsLoading: false });
+      return;
+    }
     set({ hasInitialLoad: true, sessionsLoading: true });
 
     try {
@@ -229,6 +263,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
   },
 
   switchSession: async (targetSessionId) => {
+    if (get().guestMode) return;
     const { sessionId, messages, abortController } = get();
     if (targetSessionId === sessionId && messages.length > 0) return;
 
@@ -282,7 +317,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       terminalStatus: null,
       stopError: false,
     });
-    localStorage.setItem(STORAGE_KEY_SESSION, newId);
+    if (!get().guestMode) localStorage.setItem(STORAGE_KEY_SESSION, newId);
   },
 
   stopStream: async () => {
@@ -299,7 +334,12 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
 
   startStream: async (payload, meta) => {
     if (get().loading) return;
-    const { abortController: prevAc, sessionId: storeSessionId } = get();
+    const {
+      abortController: prevAc,
+      guestMode,
+      messages: existingMessages,
+      sessionId: storeSessionId,
+    } = get();
     prevAc?.abort();
 
     const ac = new AbortController();
@@ -343,7 +383,19 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
 
     try {
       const response = await agentApi.chatStream(
-        { ...payload, session_id: streamSessionId, request_id: requestId },
+        {
+          ...payload,
+          session_id: streamSessionId,
+          request_id: requestId,
+          ...(guestMode
+            ? {
+                history: existingMessages.slice(-10).map((message) => ({
+                  role: message.role,
+                  content: message.content,
+                })),
+              }
+            : {}),
+        },
         { signal: ac.signal },
       );
       const reader = response.body!.getReader();
@@ -380,7 +432,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
           set((s) => ({
             messages: [...s.messages, { ...userMessage, backend: acceptedEvent!.backend }],
             serverCancellation: acceptedEvent!.backend === 'codex_app_server',
-            sessions: s.sessions.some((x) => x.session_id === streamSessionId)
+            sessions: s.guestMode || s.sessions.some((x) => x.session_id === streamSessionId)
               ? s.sessions
               : [
                   {

@@ -6,7 +6,7 @@ This is the operational companion to the [multi-user identity and RBAC PRD](mult
 
 The current implementation includes local identities, Argon2id credentials, separate workspace/admin server-side sessions, Owner/Admin/Auditor/Member RBAC, trusted-terminal owner bootstrap and password reset, one-time invitations, user administration, audit logs, and owner isolation for analysis history, backtests, tasks, Agent conversations, portfolios, alerts, decision signals, usage, and Web watchlists.
 
-Market quotes, public fundamentals, FX rates, and structured public market intelligence remain shared. Private reports and portfolios are not shared, and P0 does not give administrators a bypass for reading another user's private report body.
+Market quotes, public fundamentals, FX rates, and structured public market intelligence remain shared. Private reports and portfolios are not shared, and P0 does not give administrators a bypass for reading another user's private report body. Optional guest access uses the same workspace: public live-market reads and transient AI chat are available, while personal-data operations require sign-in.
 
 MFA, OIDC/SSO, organizations, cross-user sharing, interactive API-key/service-account login, independent Bot identity, and the Desktop loopback handshake remain P1/P2 work. Desktop can currently use the same workspace login when it loads the Web service.
 
@@ -18,6 +18,8 @@ MFA, OIDC/SSO, organizations, cross-user sharing, interactive API-key/service-ac
 | `member` | Yes | No | Owned workspace resources |
 
 Workspace and admin cookies are deliberately separate (`dsa_app_sid` and `dsa_admin_sid`). Logging out from one audience does not revoke the other.
+
+Guest access has no separate route and is not an account, role, or authentication audience. A visitor selects “Enter guest experience” on `/login` and uses the normal workspace. Public live-market reads and transient AI chat are available; portfolios, saved watchlists, histories, alerts, and other personal-data capabilities require sign-in.
 
 ## 2. Preconditions and backup
 
@@ -47,6 +49,9 @@ Set these explicitly in `.env`:
 
 ```dotenv
 AUTH_MODE=multi_user
+GUEST_ACCESS_ENABLED=false
+GUEST_AI_REQUESTS_PER_HOUR=20
+GUEST_AI_MAX_HISTORY_MESSAGES=10
 DATABASE_PATH=./data/stock_analysis.db
 USER_SESSION_MAX_AGE_HOURS=24
 USER_SESSION_IDLE_MINUTES=480
@@ -57,6 +62,8 @@ MULTI_USER_LEGACY_OWNER_USERNAME=owner
 ```
 
 An explicit `AUTH_MODE` overrides the legacy `ADMIN_AUTH_ENABLED` switch. Only enable `TRUST_X_FORWARDED_FOR` when every request passes through a controlled proxy that strips and rewrites forwarded client, protocol, and host headers.
+
+Set `GUEST_ACCESS_ENABLED=true` to show the guest entry on `/login` and enable the server-side anonymous allowlist. `GUEST_AI_REQUESTS_PER_HOUR` limits transient AI requests per source IP and `GUEST_AI_MAX_HISTORY_MESSAGES` bounds browser-supplied temporary context. Restart the Web/API process after changing them.
 
 ## 4. Enable a fresh or previously disabled deployment
 
@@ -142,6 +149,7 @@ Proceed only when it prints `missing=[]`. Do not manually rewrite owner IDs or d
 - Workspace login: `https://your-host/login`
 - Administrator login: `https://your-host/admin/login`
 - Invitation acceptance: `https://your-host/accept-invite`
+- Guest entry: `https://your-host/login` (select “Enter guest experience”; there is no separate demo page)
 
 An Owner or Platform Admin generates a one-time invitation in the admin console. Send the token over a trusted channel. The recipient may paste it into the acceptance page or use `/accept-invite?token=<token>`, then sets a display name and a password of at least 12 characters. Invitations expire after 72 hours by default and cannot be reused.
 
@@ -174,6 +182,8 @@ Browser --HTTPS--> controlled reverse proxy --private HTTP--> one DSA Web/API pr
 Use two browser profiles for Owner and Member.
 
 - [ ] Unauthenticated private APIs return 401.
+- [ ] If guest access is enabled, an unauthenticated visitor can enter the normal workspace from `/login`, read public live-market data, and use transient AI chat.
+- [ ] Guest AI history disappears after refresh; no guest rows are added to `conversation_messages`, `agent_provider_turns`, or `llm_usage`; portfolio creation, watchlist persistence, private history, and other personal operations prompt for sign-in, and private APIs still return 401.
 - [ ] Owner can hold workspace and admin sessions at the same time.
 - [ ] Member can use the workspace but receives 403 on admin login.
 - [ ] Auditor can read audit logs but cannot manage users or use the workspace.

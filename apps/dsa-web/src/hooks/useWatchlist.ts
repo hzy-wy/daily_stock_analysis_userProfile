@@ -14,7 +14,12 @@ export interface UseWatchlistReturn {
   refresh: () => Promise<void>;
 }
 
-export function useWatchlist(): UseWatchlistReturn {
+type UseWatchlistOptions = {
+  enabled?: boolean;
+  onLoginRequired?: (reason: string) => void;
+};
+
+export function useWatchlist({ enabled = true, onLoginRequired }: UseWatchlistOptions = {}): UseWatchlistReturn {
   const [codes, setCodes] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isActioning, setIsActioning] = useState(false);
@@ -33,6 +38,10 @@ export function useWatchlist(): UseWatchlistReturn {
   }, []);
 
   const refresh = useCallback(async () => {
+    if (!enabled) {
+      setCodes([]);
+      return;
+    }
     try {
       const result = await systemConfigApi.getWatchlist();
       if (mountedRef.current) {
@@ -41,7 +50,7 @@ export function useWatchlist(): UseWatchlistReturn {
     } catch {
       // keep existing codes
     }
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
     setIsLoading(true);
@@ -71,6 +80,10 @@ export function useWatchlist(): UseWatchlistReturn {
 
   const addToWatchlist = useCallback(async (stockCode: string) => {
     if (!stockCode || isActioning) return;
+    if (!enabled) {
+      onLoginRequired?.('自选股会保存到个人工作区，请先登录。');
+      return;
+    }
     setIsActioning(true);
     try {
       const result = await systemConfigApi.addToWatchlist(stockCode);
@@ -83,10 +96,14 @@ export function useWatchlist(): UseWatchlistReturn {
     } finally {
       if (mountedRef.current) setIsActioning(false);
     }
-  }, [isActioning, showMessage]);
+  }, [enabled, isActioning, onLoginRequired, showMessage]);
 
   const removeFromWatchlist = useCallback(async (stockCode: string) => {
     if (!stockCode || isActioning) return;
+    if (!enabled) {
+      onLoginRequired?.('自选股会保存到个人工作区，请先登录。');
+      return;
+    }
     setIsActioning(true);
     try {
       const result = await systemConfigApi.removeFromWatchlist(stockCode);
@@ -99,7 +116,7 @@ export function useWatchlist(): UseWatchlistReturn {
     } finally {
       if (mountedRef.current) setIsActioning(false);
     }
-  }, [isActioning, showMessage]);
+  }, [enabled, isActioning, onLoginRequired, showMessage]);
 
   const toggleWatchlist = useCallback(async (stockCode: string) => {
     const existingStockCode = findMatchingStockCode(codes, stockCode);

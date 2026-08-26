@@ -332,6 +332,7 @@ def run_agent_loop(
     tool_call_timeout_seconds: Optional[float] = None,
     stock_scope: Optional[StockScope] = None,
     emit_stage_events: bool = True,
+    persist_usage: bool = True,
 ) -> RunLoopResult:
     """Execute the ReAct LLM ↔ tool loop.
 
@@ -352,6 +353,9 @@ def run_agent_loop(
         emit_stage_events: Whether to emit the synthetic ``agent_loop``
             stage lifecycle. Orchestrated business stages disable this so
             ``stage_start`` / ``stage_done`` only describe real stages.
+        persist_usage: Whether provider usage may be written to telemetry
+            storage. Anonymous guest turns disable this while still returning
+            usage in the in-memory result.
 
     Returns:
         A :class:`RunLoopResult` with the final content, stats, and the
@@ -461,7 +465,12 @@ def run_agent_loop(
         if m and m != "error":
             models_used.append(m)
         model_for_usage = m or response.provider
-        if model_for_usage and model_for_usage != "error" and should_persist_usage_telemetry(response.usage):
+        if (
+            persist_usage
+            and model_for_usage
+            and model_for_usage != "error"
+            and should_persist_usage_telemetry(response.usage)
+        ):
             _persist_usage(response.usage, model_for_usage, call_type="agent")
 
         remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
