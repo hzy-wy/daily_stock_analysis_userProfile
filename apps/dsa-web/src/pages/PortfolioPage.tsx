@@ -1201,7 +1201,7 @@ const PortfolioPage: React.FC<PortfolioPageProps> = ({ guestMode = false }) => {
 
   return (
     <div className="portfolio-page min-h-[100dvh] space-y-4 overflow-x-clip p-4 md:p-6">
-      <section className="space-y-3">
+      <section className="space-y-3" data-onboarding="portfolio-overview">
         <div className="space-y-2">
           <h1 className="text-xl md:text-2xl font-semibold text-foreground">{text.title}</h1>
           <p className="text-xs md:text-sm text-secondary">

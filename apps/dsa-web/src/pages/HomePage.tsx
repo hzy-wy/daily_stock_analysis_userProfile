@@ -253,6 +253,7 @@ const HomePage: React.FC<HomePageProps> = ({ guestMode = false }) => {
     error,
     isAnalyzing,
     selectedReport,
+    pendingReportId,
     isLoadingReport,
     isHistoryTrendOpen,
     marketReviewHistoryItems,
@@ -1276,7 +1277,7 @@ const HomePage: React.FC<HomePageProps> = ({ guestMode = false }) => {
           historyItems={mergedStockBarItems}
           isLoadingHistory={isLoadingStockBar}
           selectedStockCode={selectedReport?.meta.stockCode}
-          selectedRecordId={selectedReport?.meta.id}
+          selectedRecordId={pendingReportId ?? selectedReport?.meta.id}
           onHistoryItemClick={handleHistoryItemClick}
           onDeleteStock={handleDeleteStock}
           isDeleting={isDeletingStock}
@@ -1300,6 +1301,7 @@ const HomePage: React.FC<HomePageProps> = ({ guestMode = false }) => {
       openTaskRunFlow,
       selectedReport?.meta.id,
       selectedReport?.meta.stockCode,
+      pendingReportId,
       sidebarWorkspaceTab,
       todayAnalysisItems,
       watchlistAnalyzedTodayCount,
@@ -1331,7 +1333,7 @@ const HomePage: React.FC<HomePageProps> = ({ guestMode = false }) => {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
                 </svg>
               </button>
-              <div className="relative min-w-0 flex-1">
+              <div className="relative min-w-0 flex-1" data-onboarding="home-stock-search">
                 <StockAutocomplete
                   value={query}
                   onChange={setQuery}

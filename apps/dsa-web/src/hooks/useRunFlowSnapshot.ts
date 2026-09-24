@@ -448,6 +448,7 @@ export function useRunFlowSnapshot({
 
   useTaskStream({
     enabled: shouldLoad && sourceType === 'task',
+    onResyncRequired: () => { void refetch(); },
     onTaskFlowEvent: (task, flowEvent) => {
       if (task.taskId !== taskId) {
         return;

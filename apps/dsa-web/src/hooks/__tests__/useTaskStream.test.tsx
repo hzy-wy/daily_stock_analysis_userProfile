@@ -83,6 +83,18 @@ describe('useTaskStream', () => {
     expect(eventSourceInstance.close).toHaveBeenCalled();
   });
 
+  it('requests authoritative state for every subscriber after buffer overflow', async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    renderHook(() => useTaskStream({ onResyncRequired: first }));
+    renderHook(() => useTaskStream({ onResyncRequired: second }));
+    await waitFor(() => expect(eventSourceInstance.listeners.resync_required).toBeDefined());
+    eventSourceInstance.listeners.resync_required?.(new MessageEvent('resync_required'));
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(eventSourceInstances).toHaveLength(1);
+  });
+
   it('parses task_progress events and forwards the updated task payload', async () => {
     const onTaskProgress = vi.fn();
     const onTaskFlowEvent = vi.fn();

@@ -19,6 +19,41 @@ const baseSummary = {
 };
 
 describe('ReportOverview', () => {
+  it('rebuilds a generic historical summary from its saved evidence snapshot', () => {
+    render(
+      <ReportOverview
+        meta={{ ...baseMeta, currentPrice: 16.03, changePct: 4.57 }}
+        summary={{ ...baseSummary, analysisSummary: '分析完成' }}
+        details={{
+          rawResult: {
+            sentimentScore: 56,
+            trendPrediction: '看多',
+            operationAdvice: '观望',
+          },
+          contextSnapshot: {
+            enhancedContext: {
+              today: { close: 16.03, ma5: 15.04, ma10: 14.93, ma20: 13.99, isEstimated: true },
+              realtime: { price: 16.03, changePct: 4.57, volumeRatio: 1.33, turnoverRate: 5.28 },
+              trendAnalysis: {
+                maAlignment: '多头排列 MA5>MA10>MA20',
+                biasMa5: 6.6,
+                signalReasons: ['多头排列，顺势做多'],
+                riskFactors: ['乖离率过高，严禁追高'],
+              },
+              fundamentalContext: { status: 'partial' },
+              marketStructureContext: { status: 'partial' },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/系统证据链/)).toBeVisible();
+    expect(screen.getByText(/MA5\/10\/20 为 15.04\/14.93\/13.99/)).toBeVisible();
+    expect(screen.getByText(/乖离率过高，严禁追高/)).toBeVisible();
+    expect(screen.getByText(/题材强弱榜单证据不完整/)).toBeVisible();
+  });
+
   it('renders final market phase and partial-bar labels from report metadata', () => {
     render(
       <ReportOverview

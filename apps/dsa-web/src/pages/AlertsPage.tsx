@@ -281,7 +281,10 @@ const AlertsPage: React.FC = () => {
       ) : null}
       {rulesError ? <ApiErrorAlert error={rulesError} onDismiss={() => setRulesError(null)} /> : null}
 
-      <div className="grid items-stretch gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
+      <div
+        className="grid items-stretch gap-5 xl:grid-cols-[380px_minmax(0,1fr)]"
+        data-onboarding="alerts-workspace"
+      >
         <AlertRuleForm onSubmit={handleCreateRule} isSubmitting={createLoading} />
         <div className="flex h-full min-h-0 flex-col gap-4">
           <AlertRuleList

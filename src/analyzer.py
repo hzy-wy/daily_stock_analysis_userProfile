@@ -119,6 +119,38 @@ DEFAULT_LITELLM_TIMEOUT_SECONDS = 300.0
 _LITELLM_CONCURRENCY_CONDITION = threading.Condition()
 _LITELLM_CONCURRENCY_ACTIVE = 0
 _LITELLM_CONCURRENCY_WAITERS = deque()
+_LITELLM_STREAM_UNAVAILABLE_COOLDOWN_SECONDS = 15 * 60.0
+_LITELLM_STREAM_UNAVAILABLE_LOCK = threading.Lock()
+_LITELLM_STREAM_UNAVAILABLE_UNTIL: Dict[str, float] = {}
+
+
+def _can_attempt_litellm_stream(model: str, *, now: Optional[float] = None) -> bool:
+    """Return whether a model should receive another streaming attempt.
+
+    Some OpenAI-compatible routes accept ``stream=True`` but never emit a
+    chunk. The normal fallback is non-stream, so remember that capability gap
+    briefly instead of paying the same failed streaming wait for every stock in
+    a batch. The entry expires automatically and cannot permanently disable a
+    provider whose streaming service recovers.
+    """
+    current_time = time.monotonic() if now is None else now
+    with _LITELLM_STREAM_UNAVAILABLE_LOCK:
+        unavailable_until = _LITELLM_STREAM_UNAVAILABLE_UNTIL.get(model)
+        if unavailable_until is None:
+            return True
+        if unavailable_until <= current_time:
+            _LITELLM_STREAM_UNAVAILABLE_UNTIL.pop(model, None)
+            return True
+        return False
+
+
+def _mark_litellm_stream_unavailable(model: str, *, now: Optional[float] = None) -> None:
+    """Temporarily prefer the already-supported non-stream fallback."""
+    current_time = time.monotonic() if now is None else now
+    with _LITELLM_STREAM_UNAVAILABLE_LOCK:
+        _LITELLM_STREAM_UNAVAILABLE_UNTIL[model] = (
+            current_time + _LITELLM_STREAM_UNAVAILABLE_COOLDOWN_SECONDS
+        )
 
 
 def _effective_litellm_concurrency(config: Any) -> int:
@@ -3316,7 +3348,11 @@ class GeminiAnalyzer:
         router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
             origins = route_deployment_origins(config.llm_model_list, model)
-            model_stream = bool(stream and not origins.has_hermes)
+            model_stream = bool(
+                stream
+                and not origins.has_hermes
+                and _can_attempt_litellm_stream(model)
+            )
             recovery_model_list = config.llm_model_list
             legacy_router_model_list = getattr(self, "_legacy_router_model_list", None) or []
             if legacy_router_model_list and model == config.litellm_model and not use_channel_router:
@@ -3447,8 +3483,9 @@ class GeminiAnalyzer:
                                 safe_error,
                             )
                         else:
+                            _mark_litellm_stream_unavailable(model)
                             logger.warning(
-                                "[LiteLLM] %s stream unavailable before first chunk, falling back to non-stream: %s",
+                                "[LiteLLM] %s stream unavailable before first chunk; temporarily using non-stream: %s",
                                 model,
                                 safe_error,
                             )
@@ -3856,6 +3893,12 @@ class GeminiAnalyzer:
                     )
                 else:
                     self._apply_placeholder_fill(result, missing_fields)
+                    if "analysis_summary" in missing_fields:
+                        result.analysis_summary = self._build_methodology_fallback_summary(
+                            result,
+                            context,
+                            report_language=report_language,
+                        )
                     logger.warning(
                         "[LLM完整性] 必填字段缺失 %s，已占位补全，不阻塞流程",
                         missing_fields,
@@ -4586,6 +4629,137 @@ class GeminiAnalyzer:
         """Delegate to module-level apply_placeholder_fill."""
         apply_placeholder_fill(result, missing_fields)
 
+    def _build_methodology_fallback_summary(
+        self,
+        result: AnalysisResult,
+        context: Dict[str, Any],
+        *,
+        report_language: str,
+    ) -> str:
+        """Build a traceable evidence summary when the model omits its own.
+
+        This deliberately uses only the data already collected for this run.
+        It is not a substitute for an LLM thesis: it states the observation,
+        source limitations, and trading discipline so a truncated response can
+        never degrade into the misleading generic text "分析完成".
+        """
+        normalized_language = normalize_report_language(report_language)
+        today = context.get("today") if isinstance(context.get("today"), dict) else {}
+        realtime = context.get("realtime") if isinstance(context.get("realtime"), dict) else {}
+        trend = context.get("trend_analysis") if isinstance(context.get("trend_analysis"), dict) else {}
+        fundamental = (
+            context.get("fundamental_context")
+            if isinstance(context.get("fundamental_context"), dict)
+            else {}
+        )
+        market_structure = (
+            context.get("market_structure_context")
+            if isinstance(context.get("market_structure_context"), dict)
+            else {}
+        )
+
+        def _number(value: Any) -> Optional[float]:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        def _first_text(values: Any, limit: int = 2) -> str:
+            if not isinstance(values, list):
+                return ""
+            items = [str(value).strip() for value in values if str(value).strip()]
+            return "；".join(items[:limit])
+
+        price = _number(realtime.get("price"))
+        if price is None:
+            price = _number(today.get("close"))
+        change_pct = _number(realtime.get("change_pct"))
+        if change_pct is None:
+            change_pct = _number(today.get("pct_chg"))
+        ma5 = _number(today.get("ma5"))
+        ma10 = _number(today.get("ma10"))
+        ma20 = _number(today.get("ma20"))
+        bias_ma5 = _number(trend.get("bias_ma5"))
+        volume_ratio = _number(realtime.get("volume_ratio"))
+        if volume_ratio is None:
+            volume_ratio = _number(today.get("volume_ratio"))
+        turnover_rate = _number(realtime.get("turnover_rate"))
+        trend_reason = _first_text(trend.get("signal_reasons"))
+        risks = _first_text(trend.get("risk_factors"))
+        ma_alignment = str(trend.get("ma_alignment") or trend.get("trend_status") or "").strip()
+        valuation = fundamental.get("valuation") if isinstance(fundamental.get("valuation"), dict) else {}
+        valuation_data = valuation.get("data") if isinstance(valuation.get("data"), dict) else {}
+        pe_ratio = _number(valuation_data.get("pe_ratio"))
+        pb_ratio = _number(valuation_data.get("pb_ratio"))
+
+        if normalized_language != "zh":
+            price_text = f"price {price:.2f}" if price is not None else "price unavailable"
+            trend_text = ma_alignment or str(result.trend_prediction or "trend unconfirmed")
+            risk_text = risks or "no additional model risk text; use the stop-loss and re-check conditions"
+            return (
+                f"Methodology fallback — conclusion: {result.trend_prediction or 'neutral'}; "
+                f"action: {result.operation_advice or 'watch'} (score {result.sentiment_score}/100). "
+                f"Technical evidence: {price_text}; {trend_text}. "
+                f"Risk boundary: {risk_text}. "
+                "Method: verify trend, entry distance, volume/turnover, theme and fundamental coverage in order; "
+                "a failed risk gate means wait rather than chase."
+            )
+
+        technical_evidence: List[str] = []
+        if price is not None:
+            price_line = f"最新价 {price:.2f} 元"
+            if change_pct is not None:
+                price_line += f"，当日涨跌 {change_pct:+.2f}%"
+            technical_evidence.append(price_line)
+        if ma_alignment:
+            technical_evidence.append(ma_alignment)
+        if all(value is not None for value in (ma5, ma10, ma20)):
+            technical_evidence.append(f"MA5/10/20 为 {ma5:.2f}/{ma10:.2f}/{ma20:.2f}")
+        if bias_ma5 is not None:
+            technical_evidence.append(f"相对 MA5 乖离 {bias_ma5:.1f}%")
+        if volume_ratio is not None:
+            technical_evidence.append(f"量比 {volume_ratio:.2f}")
+        if turnover_rate is not None:
+            technical_evidence.append(f"换手率 {turnover_rate:.2f}%")
+
+        data_boundary: List[str] = []
+        fundamental_status = str(fundamental.get("status") or "").strip()
+        if pe_ratio is not None or pb_ratio is not None:
+            valuation_parts = []
+            if pe_ratio is not None:
+                valuation_parts.append(f"PE {pe_ratio:.2f}")
+            if pb_ratio is not None:
+                valuation_parts.append(f"PB {pb_ratio:.2f}")
+            data_boundary.append("估值快照 " + "、".join(valuation_parts))
+        if fundamental_status in {"partial", "failed"}:
+            data_boundary.append("成长、业绩或资金等基本面字段存在缺口，不据此做确定性判断")
+        stock_position = (
+            market_structure.get("stock_market_position")
+            if isinstance(market_structure.get("stock_market_position"), dict)
+            else {}
+        )
+        if str(stock_position.get("status") or market_structure.get("status") or "") in {"partial", "unknown"}:
+            data_boundary.append("题材榜单证据不完整，板块归属仅作联动线索")
+        if bool(today.get("is_estimated")):
+            data_boundary.append("当日行情含实时估算字段，收盘后应以最终日线复核")
+
+        conclusion = (
+            f"【结论】{result.trend_prediction or '趋势待确认'}；"
+            f"当前建议{result.operation_advice or '观望'}（系统评分 {result.sentiment_score}/100）。"
+        )
+        evidence = "；".join(technical_evidence) or "关键技术字段未完整返回，暂不扩展技术判断"
+        lines = [conclusion, f"【技术证据】{evidence}。"]
+        if trend_reason:
+            lines.append(f"【信号依据】{trend_reason}。")
+        lines.append(f"【风险约束】{risks or '未取得可验证的模型风险文本，需按止损位和确认条件执行。'}。")
+        if data_boundary:
+            lines.append(f"【数据边界】{'；'.join(data_boundary)}。")
+        lines.append(
+            "【方法与纪律】依次核验“趋势—位置—量价—题材/基本面—风险”。趋势向好不等于可追高；"
+            "当乖离、超买或数据质量任一环节不通过时，以等待回踩、量能确认或重新分析为准。"
+        )
+        return "\n".join(lines)
+
     def _extract_analysis_json_object(self, response_text: str) -> Tuple[str, Dict[str, Any]]:
         """Extract the single allowed JSON object from an LLM response."""
 
@@ -4636,7 +4810,7 @@ class GeminiAnalyzer:
             else:
                 if stripped[end:].strip():
                     raise
-            if not (stripped.startswith("{") and stripped.endswith("}")):
+            if not stripped.startswith("{"):
                 raise
             repaired = self._fix_json_string(stripped)
             data = json.loads(repaired)
@@ -4801,8 +4975,9 @@ class GeminiAnalyzer:
                 market_sentiment=data.get('market_sentiment', ''),
                 hot_topics=data.get('hot_topics', ''),
                 # 综合
-                analysis_summary=data.get('analysis_summary', _localized_text(
-                    report_language, en='Analysis completed', zh='分析完成', ko='분석 완료')),
+                # Keep a missing summary blank so integrity retry/fallback can
+                # supply evidence instead of silently persisting "分析完成".
+                analysis_summary=str(data.get('analysis_summary') or '').strip(),
                 key_points=data.get('key_points', ''),
                 risk_warning=data.get('risk_warning', ''),
                 buy_reason=data.get('buy_reason', ''),

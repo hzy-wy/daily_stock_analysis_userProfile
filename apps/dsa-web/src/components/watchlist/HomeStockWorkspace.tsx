@@ -253,7 +253,10 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   };
 
   const renderTabs = (
-    <div className="grid grid-cols-4 gap-1 rounded-xl border border-subtle bg-base/40 p-1">
+    <div
+      className="grid grid-cols-4 gap-1 rounded-xl border border-subtle bg-base/40 p-1"
+      data-onboarding="home-workspace-tabs"
+    >
       {tabs.map((tab) => {
         const selected = activeTab === tab.key;
         return (

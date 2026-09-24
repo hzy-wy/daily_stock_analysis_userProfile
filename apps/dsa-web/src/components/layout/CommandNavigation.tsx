@@ -7,6 +7,7 @@ import {
   BriefcaseBusiness,
   Ellipsis,
   Gauge,
+  CircleHelp,
   Home,
   LogIn,
   LogOut,
@@ -24,6 +25,7 @@ import { ConfirmDialog } from '../common/ConfirmDialog';
 import { Drawer } from '../common/Drawer';
 import { UiLanguageToggle } from '../i18n/UiLanguageToggle';
 import { ThemeToggle } from '../theme/ThemeToggle';
+import { ONBOARDING_COMMON_COPY, replayOnboarding, resolveOnboardingRole } from '../onboarding';
 
 type NavItem = {
   key: string;
@@ -63,6 +65,7 @@ const NavigationLink: React.FC<NavigationLinkProps> = ({ item, mode, onNavigate 
       to={item.to}
       end={item.exact}
       onClick={onNavigate}
+      data-onboarding-nav={item.key}
       role={mode === 'menu' ? 'menuitem' : undefined}
       aria-label={label}
       className={({ isActive }) => cn(
@@ -82,7 +85,7 @@ const NavigationLink: React.FC<NavigationLinkProps> = ({ item, mode, onNavigate 
 
 export const CommandNavigation: React.FC = () => {
   const { authEnabled, guestMode, loggedIn, logout, requestLogin, user } = useAuth();
-  const { t } = useUiLanguage();
+  const { language, t } = useUiLanguage();
   const location = useLocation();
   const desktopMenuRef = useRef<HTMLDivElement | null>(null);
   const [showAlphaSiftNav, setShowAlphaSiftNav] = useState(false);
@@ -158,6 +161,7 @@ export const CommandNavigation: React.FC = () => {
     [canConfigureSystem],
   );
   const isSecondaryRoute = secondaryItems.some((item) => location.pathname.startsWith(item.to));
+  const canReplayOnboarding = Boolean(loggedIn && user && resolveOnboardingRole(user.roles, 'workspace'));
   const closeMobileMenu = () => setMobileMenuOpen(false);
   const requestLogout = () => {
     setDesktopMenuOpen(false);
@@ -180,7 +184,7 @@ export const CommandNavigation: React.FC = () => {
             </span>
           </NavLink>
 
-          <nav className="app-commandbar__nav" aria-label={t('layout.mainNav')}>
+          <nav className="app-commandbar__nav" aria-label={t('layout.mainNav')} data-onboarding="workspace-navigation">
             {primaryItems.map((item) => (
               <NavigationLink key={item.key} item={item} mode="desktop" />
             ))}
@@ -190,6 +194,7 @@ export const CommandNavigation: React.FC = () => {
                 type="button"
                 onClick={() => setDesktopMenuOpen((value) => !value)}
                 className={cn('command-nav-link', isSecondaryRoute && 'command-nav-link--active')}
+                data-onboarding-nav="more"
                 data-state={desktopMenuOpen ? 'open' : 'closed'}
                 aria-haspopup="menu"
                 aria-expanded={desktopMenuOpen}
@@ -213,6 +218,19 @@ export const CommandNavigation: React.FC = () => {
                       onNavigate={() => setDesktopMenuOpen(false)}
                     />
                   ))}
+                  {canReplayOnboarding ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDesktopMenuOpen(false);
+                        replayOnboarding('workspace');
+                      }}
+                      className="command-menu-link"
+                    >
+                      <CircleHelp className="h-[18px] w-[18px]" />
+                      <span>{ONBOARDING_COMMON_COPY[language].replay}</span>
+                    </button>
+                  ) : null}
                   {authEnabled && loggedIn ? (
                     <button type="button" onClick={requestLogout} className="command-menu-link command-menu-link--danger">
                       <LogOut className="h-[18px] w-[18px]" />
@@ -259,7 +277,7 @@ export const CommandNavigation: React.FC = () => {
         </div>
       </header>
 
-      <nav className="app-mobile-dock" aria-label={t('layout.mobileDock')}>
+      <nav className="app-mobile-dock" aria-label={t('layout.mobileDock')} data-onboarding="workspace-navigation">
         {dockItems.map((item) => (
           <NavigationLink key={item.key} item={item} mode="dock" />
         ))}
@@ -296,6 +314,19 @@ export const CommandNavigation: React.FC = () => {
               <NavigationLink key={item.key} item={item} mode="menu" onNavigate={closeMobileMenu} />
             ))}
           </nav>
+          {canReplayOnboarding ? (
+            <button
+              type="button"
+              className="command-menu-link mt-3 w-full"
+              onClick={() => {
+                closeMobileMenu();
+                replayOnboarding('workspace');
+              }}
+            >
+              <CircleHelp className="h-[18px] w-[18px]" />
+              <span>{ONBOARDING_COMMON_COPY[language].replay}</span>
+            </button>
+          ) : null}
           {authEnabled && loggedIn ? (
             <button type="button" onClick={requestLogout} className="command-menu-link command-menu-link--danger mt-3 w-full">
               <LogOut className="h-[18px] w-[18px]" />

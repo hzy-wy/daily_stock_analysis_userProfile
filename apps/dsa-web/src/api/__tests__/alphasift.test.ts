@@ -161,8 +161,8 @@ describe('alphasiftApi', () => {
     const result = await alphasiftApi.getHotspots({ provider: 'akshare', top: 12, refresh: true });
 
     expect(get).toHaveBeenCalledWith('/api/v1/alphasift/hotspots', {
-      params: { provider: 'akshare', top: 12, refresh: true, include_details: true },
-      timeout: 300000,
+        params: { provider: 'akshare', top: 12, refresh: true, include_details: false },
+        timeout: 15000,
     });
     expect(result.providerUsed).toBe('akshare');
     expect(result.hotspots[0].heatScore).toBe(88);

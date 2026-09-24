@@ -14,6 +14,7 @@ export type SSEEventType =
   | 'task_progress'
   | 'task_completed'
   | 'task_failed'
+  | 'resync_required'
   | 'heartbeat';
 
 /**
@@ -44,6 +45,8 @@ export interface UseTaskStreamOptions {
   onTaskFlowEvent?: (task: TaskInfo, event: RunFlowEvent) => void;
   /** Connected callback */
   onConnected?: () => void;
+  /** The server dropped an overflowing event buffer; reload authoritative state. */
+  onResyncRequired?: () => void;
   /** Connection error callback */
   onError?: (error: Event) => void;
   /** Whether to reconnect automatically */
@@ -75,6 +78,7 @@ type TaskStreamCallbacks = Pick<
   | 'onTaskFailed'
   | 'onTaskFlowEvent'
   | 'onConnected'
+  | 'onResyncRequired'
   | 'onError'
 >;
 
@@ -201,6 +205,10 @@ function connectSharedStream() {
     forEachSubscriber((callbacks) => callbacks.onConnected?.());
   });
 
+  eventSource.addEventListener('resync_required', () => {
+    forEachSubscriber((callbacks) => callbacks.onResyncRequired?.());
+  });
+
   eventSource.addEventListener('task_created', (e) => {
     const payload = parseEventData((e as MessageEvent<string>).data);
     if (payload) {
@@ -273,6 +281,7 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
     onTaskFailed,
     onTaskFlowEvent,
     onConnected,
+    onResyncRequired,
     onError,
     autoReconnect = true,
     reconnectDelay = 3000,
@@ -292,6 +301,7 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
     onTaskFailed,
     onTaskFlowEvent,
     onConnected,
+    onResyncRequired,
     onError,
   });
 
@@ -305,6 +315,7 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
       onTaskFailed,
       onTaskFlowEvent,
       onConnected,
+      onResyncRequired,
       onError,
     };
   });

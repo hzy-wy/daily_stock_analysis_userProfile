@@ -31,10 +31,41 @@ describe('useDashboardLifecycle', () => {
   });
 
   afterEach(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     vi.useRealTimers();
   });
 
-  it('loads history, refreshes on interval, and reacts to visibility changes', () => {
+  it('pauses hidden polling and coalesces refreshes while a request is pending', async () => {
+    let finish!: () => void;
+    const refreshHistory = vi.fn().mockImplementationOnce(
+      () => new Promise<void>((resolve) => { finish = resolve; }),
+    ).mockResolvedValue(undefined);
+    renderHook(() => useDashboardLifecycle({
+      loadInitialHistory: vi.fn().mockResolvedValue(undefined),
+      refreshHistory,
+      refreshActiveTasks: vi.fn().mockResolvedValue(undefined),
+      syncTaskCreated: vi.fn(), syncTaskUpdated: vi.fn(), syncTaskFailed: vi.fn(),
+      removeTask: vi.fn(), ...defaultMocks,
+    }));
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(refreshHistory).not.toHaveBeenCalled();
+    await act(async () => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(refreshHistory).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(refreshHistory).toHaveBeenCalledTimes(1);
+    await act(async () => { finish(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(refreshHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it('loads history, refreshes on interval, and reacts to visibility changes', async () => {
     const loadInitialHistory = vi.fn().mockResolvedValue(undefined);
     const refreshHistory = vi.fn().mockResolvedValue(undefined);
     const refreshActiveTasks = vi.fn().mockResolvedValue(undefined);
@@ -58,15 +89,15 @@ describe('useDashboardLifecycle', () => {
     expect(defaultMocks.loadMarketReviewHistory).toHaveBeenCalledTimes(1);
     expect(refreshActiveTasks).toHaveBeenCalledTimes(1);
 
-    act(() => {
-      vi.advanceTimersByTime(30_000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
     });
     expect(refreshHistory).toHaveBeenCalledWith(true);
     expect(defaultMocks.refreshMarketReviewHistory).toHaveBeenCalledWith(true);
     expect(refreshActiveTasks).toHaveBeenCalledTimes(2);
     expect(onDashboardDataRefresh).toHaveBeenCalledTimes(1);
 
-    act(() => {
+    await act(async () => {
       Object.defineProperty(document, 'visibilityState', {
         configurable: true,
         value: 'visible',
@@ -110,6 +141,21 @@ describe('useDashboardLifecycle', () => {
     });
 
     expect(removeTask).not.toHaveBeenCalled();
+  });
+
+  it('reloads tasks and report lists after an event buffer overflow', async () => {
+    const refreshHistory = vi.fn().mockResolvedValue(undefined);
+    const refreshActiveTasks = vi.fn().mockResolvedValue(undefined);
+    renderHook(() => useDashboardLifecycle({
+      loadInitialHistory: vi.fn().mockResolvedValue(undefined), refreshHistory, refreshActiveTasks,
+      syncTaskCreated: vi.fn(), syncTaskUpdated: vi.fn(), syncTaskFailed: vi.fn(),
+      removeTask: vi.fn(), ...defaultMocks,
+    }));
+    await act(async () => { vi.mocked(useTaskStream).mock.calls[0][0]?.onResyncRequired?.(); });
+    expect(refreshHistory).toHaveBeenCalledWith(true);
+    expect(refreshActiveTasks).toHaveBeenCalledTimes(2);
+    expect(defaultMocks.refreshMarketReviewHistory).toHaveBeenCalledWith(true);
+    expect(defaultMocks.refreshStockBar).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes completed task history and removes completed tasks after the grace window', async () => {

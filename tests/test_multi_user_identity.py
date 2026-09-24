@@ -64,6 +64,25 @@ def _login(service: IdentityService, identifier: str, password: str, audience: s
     )
 
 
+def test_owner_checks_do_not_reseed_ready_database(identity_service, monkeypatch):
+    service, db = identity_service
+    service.ensure_ready()
+
+    def unexpected_seed():
+        raise AssertionError("A ready database must not be seeded on each request")
+
+    monkeypatch.setattr(service, "_seed_authorization", unexpected_seed)
+    assert service.has_owner()
+    assert service.has_owner()
+    # Owner existence remains a live query, rather than a cached boolean.
+    from src.storage import UserRecord
+    with db.get_session() as session:
+        owner = session.get(UserRecord, service.get_owner_user_id())
+        owner.status = "disabled"
+        session.commit()
+    assert not service.has_owner()
+
+
 def _write_legacy_password_file(tmp_path, password: str) -> None:
     salt = b"legacy-owner-test-salt-32-bytes!"
     digest = hashlib.pbkdf2_hmac(

@@ -33,6 +33,7 @@ import src.auth as auth
 from src.config import Config
 from src.core.config_manager import ConfigManager
 from src.services.system_config_service import SystemConfigService
+from src.storage import DatabaseManager
 
 
 class SystemConfigApiTestCase(unittest.TestCase):
@@ -60,10 +61,17 @@ class SystemConfigApiTestCase(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
-        self._orig_dsa_desktop_mode = os.environ.get("DSA_DESKTOP_MODE")
-        self._orig_database_path = os.environ.get("DATABASE_PATH")
-        os.environ["ENV_FILE"] = str(self.env_path)
-        os.environ["DATABASE_PATH"] = str(Path(self.temp_dir.name) / "system_config_api_test.db")
+        essential_env = {
+            key: os.environ[key]
+            for key in ("PATH", "PATHEXT", "SYSTEMROOT", "COMSPEC", "TEMP", "TMP")
+            if key in os.environ
+        }
+        essential_env.update({
+            "ENV_FILE": str(self.env_path),
+            "DATABASE_PATH": str(Path(self.temp_dir.name) / "system_config_api_test.db"),
+        })
+        self._environment_patch = patch.dict(os.environ, essential_env, clear=True)
+        self._environment_patch.start()
         Config.reset_instance()
 
         self.manager = ConfigManager(env_path=self.env_path)
@@ -73,16 +81,9 @@ class SystemConfigApiTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         Config.reset_instance()
+        DatabaseManager.reset_instance()
         self._verify_session_patch.stop()
-        os.environ.pop("ENV_FILE", None)
-        if self._orig_dsa_desktop_mode is None:
-            os.environ.pop("DSA_DESKTOP_MODE", None)
-        else:
-            os.environ["DSA_DESKTOP_MODE"] = self._orig_dsa_desktop_mode
-        if self._orig_database_path is None:
-            os.environ.pop("DATABASE_PATH", None)
-        else:
-            os.environ["DATABASE_PATH"] = self._orig_database_path
+        self._environment_patch.stop()
         self.temp_dir.cleanup()
 
     @staticmethod
@@ -319,6 +320,10 @@ class SystemConfigApiTestCase(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout="")
 
         with (
+            patch(
+                "src.services.agent_backend_status_service.is_native_windows",
+                return_value=False,
+            ),
             patch(
                 "src.services.agent_backend_status_service.resolve_command",
                 return_value=["/test/codex"],

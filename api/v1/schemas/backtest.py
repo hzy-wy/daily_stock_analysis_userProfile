@@ -36,6 +36,21 @@ class BacktestRunResponse(BaseModel):
     diagnostics: Dict[str, Any] = Field(default_factory=dict, description="回测筛选与诊断信息")
 
 
+class BacktestTaskAccepted(BaseModel):
+    task_id: str
+    status: str = "pending"
+    message: str
+
+
+class BacktestTaskStatus(BaseModel):
+    task_id: str
+    status: str
+    progress: int
+    message: Optional[str] = None
+    result: Optional[BacktestRunResponse] = None
+    error: Optional[str] = None
+
+
 class BacktestResultItem(BaseModel):
     analysis_history_id: int
     code: str

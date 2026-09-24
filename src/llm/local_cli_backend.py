@@ -41,7 +41,10 @@ from src.llm.generation_backend import (
 
 DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS = 300
 DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES = 1024 * 1024
-DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY = 1
+# LiteLLM requests are independent of the local CLI cap below. Two concurrent
+# remote generations keep a three-worker batch responsive while retaining a
+# conservative safety margin for provider rate limits. Local CLI stays at one.
+DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY = 2
 DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY = 1
 MAX_LOCAL_CLI_TIMEOUT_SECONDS = 3600
 MAX_LOCAL_CLI_OUTPUT_BYTES = 32 * 1024 * 1024

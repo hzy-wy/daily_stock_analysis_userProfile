@@ -38,6 +38,17 @@ from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
 logger = logging.getLogger(__name__)
 
+# Bound process memory independently of provider latency and client read speed.
+MAX_ACTIVE_TASKS = 100
+TASK_EVENT_BUFFER_SIZE = 256
+
+
+class TaskQueueFullError(RuntimeError):
+    """No capacity for this complete submission; callers may retry later."""
+
+    def __init__(self):
+        super().__init__("分析队列已满，请等待现有任务完成后重试")
+
 
 def _dedupe_stock_code_key(stock_code: str) -> str:
     """
@@ -179,6 +190,10 @@ class AnalysisTaskQueue:
         return cls._instance
     
     def __init__(self, max_workers: int = 3):
+        with self._instance_lock:
+            self._initialize(max_workers)
+
+    def _initialize(self, max_workers: int) -> None:
         # 防止重复初始化
         if hasattr(self, '_initialized') and self._initialized:
             return
@@ -212,12 +227,13 @@ class AnalysisTaskQueue:
     @property
     def executor(self) -> ThreadPoolExecutor:
         """懒加载线程池"""
-        if self._executor is None:
-            self._executor = ThreadPoolExecutor(
-                max_workers=self._max_workers,
-                thread_name_prefix="analysis_task_"
-            )
-        return self._executor
+        with self._data_lock:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(
+                    max_workers=self._max_workers,
+                    thread_name_prefix="analysis_task_"
+                )
+            return self._executor
 
     @property
     def max_workers(self) -> int:
@@ -282,6 +298,14 @@ class AnalysisTaskQueue:
         return "applied"
     
     # ========== 任务提交与查询 ==========
+
+    def _check_capacity_locked(self, additional: int) -> None:
+        active = sum(
+            task.status in (TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.CANCEL_REQUESTED)
+            for task in self._tasks.values()
+        )
+        if additional and active + additional > MAX_ACTIVE_TASKS:
+            raise TaskQueueFullError()
 
     @staticmethod
     def _current_owner_user_id() -> Optional[str]:
@@ -426,6 +450,10 @@ class AnalysisTaskQueue:
         owner_user_id = self._current_owner_user_id()
 
         with self._data_lock:
+            new_keys = {
+                self._scoped_dedupe_key(code, owner_user_id) for code in canonical_codes
+            } - self._analyzing_stocks.keys()
+            self._check_capacity_locked(len(new_keys))
             for stock_code in canonical_codes:
                 dedupe_key = self._scoped_dedupe_key(stock_code, owner_user_id)
                 if dedupe_key in self._analyzing_stocks:
@@ -495,6 +523,8 @@ class AnalysisTaskQueue:
         task_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         region: Optional[str] = None,
+        dedupe: bool = False,
+        dedupe_key: Optional[str] = None,
     ) -> TaskInfo:
         """
         Submit a generic background callable with task lifecycle tracking.
@@ -518,7 +548,25 @@ class AnalysisTaskQueue:
         with self._data_lock:
             if task_id in self._tasks:
                 raise ValueError(f"任务 ID 已存在: {task_id}")
+            scoped_dedupe_key = self._scoped_dedupe_key(
+                dedupe_key or stock_code,
+                task_info.owner_user_id,
+            )
+            if dedupe:
+                existing_task_id = self._analyzing_stocks.get(scoped_dedupe_key)
+                if existing_task_id:
+                    existing_task = self._tasks.get(existing_task_id)
+                    if existing_task and existing_task.status in (
+                        TaskStatus.PENDING,
+                        TaskStatus.PROCESSING,
+                        TaskStatus.CANCEL_REQUESTED,
+                    ):
+                        raise DuplicateTaskError(stock_code, existing_task_id)
+                    self._analyzing_stocks.pop(scoped_dedupe_key, None)
+            self._check_capacity_locked(1)
             self._tasks[task_id] = task_info
+            if dedupe:
+                self._analyzing_stocks[scoped_dedupe_key] = task_id
             try:
                 future = self.executor.submit(
                     self._execute_background_task_as_owner,
@@ -527,6 +575,8 @@ class AnalysisTaskQueue:
                 )
             except Exception:
                 del self._tasks[task_id]
+                if dedupe and self._analyzing_stocks.get(scoped_dedupe_key) == task_id:
+                    del self._analyzing_stocks[scoped_dedupe_key]
                 raise
 
             self._futures[task_id] = future
@@ -623,7 +673,7 @@ class AnalysisTaskQueue:
                 and (not owner_user_id or task.owner_user_id == owner_user_id)
             ]
     
-    def list_all_tasks(self, limit: int = 50) -> List[TaskInfo]:
+    def list_all_tasks(self, limit: int = 50, statuses: Optional[List[str]] = None) -> List[TaskInfo]:
         """
         获取所有任务（按创建时间倒序）
         
@@ -638,7 +688,8 @@ class AnalysisTaskQueue:
             tasks = sorted(
                 (
                     task for task in self._tasks.values()
-                    if not owner_user_id or task.owner_user_id == owner_user_id
+                    if (not owner_user_id or task.owner_user_id == owner_user_id)
+                    and (statuses is None or task.status.value in statuses)
                 ),
                 key=lambda t: t.created_at,
                 reverse=True
@@ -794,6 +845,11 @@ class AnalysisTaskQueue:
                 query_source=query_source,
                 portfolio_context=portfolio_context,
                 report_language=report_language,
+                # Web/API tasks may reuse an existing same-day market context,
+                # but must not start a hidden full market review. Otherwise a
+                # batch of individual stocks can hold the market-review lock
+                # and make an explicit user-triggered review look duplicated.
+                daily_market_context_allow_generate=False,
             )
             reset_run_diagnostic_context(diag_token)
             diag_token = None
@@ -947,6 +1003,12 @@ class AnalysisTaskQueue:
             return self._execute_background_task(task_id, run_task)
         finally:
             reset_actor_context(tokens)
+            with self._data_lock:
+                for scoped_dedupe_key, mapped_task_id in list(
+                    self._analyzing_stocks.items()
+                ):
+                    if mapped_task_id == task_id:
+                        del self._analyzing_stocks[scoped_dedupe_key]
     
     def _cleanup_old_tasks(self) -> int:
         """
@@ -1056,13 +1118,23 @@ class AnalysisTaskQueue:
             try:
                 # 使用 call_soon_threadsafe 将事件放入 asyncio 队列
                 # 这是从工作线程向主事件循环发送消息的安全方式
-                loop.call_soon_threadsafe(queue.put_nowait, event)
+                loop.call_soon_threadsafe(self._enqueue_event, queue, event)
             except RuntimeError as e:
                 # 事件循环已关闭
                 logger.debug(f"[TaskQueue] 广播事件跳过（循环已关闭）: {e}")
             except Exception as e:
                 logger.warning(f"[TaskQueue] 广播事件失败: {e}")
     
+    @staticmethod
+    def _enqueue_event(queue: 'AsyncQueue', event: Dict[str, Any]) -> None:
+        """Runs on the subscriber loop; a slow consumer must explicitly resync."""
+        if queue.full():
+            while not queue.empty():
+                queue.get_nowait()
+            queue.put_nowait({"type": "resync_required", "data": {"reason": "slow_consumer"}})
+            return
+        queue.put_nowait(event)
+
     # ========== 清理方法 ==========
     
     def shutdown(self) -> None:

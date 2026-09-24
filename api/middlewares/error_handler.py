@@ -78,6 +78,15 @@ def add_error_handlers(app) -> None:
     """
     from fastapi import HTTPException
     from fastapi.exceptions import RequestValidationError
+    from src.services.task_queue import TaskQueueFullError
+
+    @app.exception_handler(TaskQueueFullError)
+    async def queue_full_handler(request: Request, exc: TaskQueueFullError):
+        return JSONResponse(
+            status_code=429,
+            content={"error": "task_queue_full", "message": str(exc)},
+            headers={"Retry-After": "30"},
+        )
     
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):

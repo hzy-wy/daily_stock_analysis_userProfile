@@ -142,6 +142,40 @@ describe('stockPoolStore', () => {
     expect(state.isLoadingReport).toBe(false);
   });
 
+  it('shows a pending report selection immediately while another stock is analyzing', async () => {
+    const detailRequest = createDeferred<AnalysisReport>();
+    const nextReport: AnalysisReport = {
+      ...historyReport,
+      meta: {
+        ...historyReport.meta,
+        id: 2,
+        queryId: 'q-2',
+        stockCode: '600603',
+        stockName: '广汇物流',
+      },
+    };
+    useStockPoolStore.setState({
+      selectedReport: historyReport,
+      activeTasks: [createTask({ stockCode: '600693', stockName: '东百集团' })],
+    });
+    vi.mocked(historyApi.getDetail).mockReturnValue(detailRequest.promise);
+
+    const selection = useStockPoolStore.getState().selectHistoryItem(2);
+    const pendingState = useStockPoolStore.getState();
+    expect(pendingState.pendingReportId).toBe(2);
+    expect(pendingState.isLoadingReport).toBe(true);
+    expect(pendingState.selectedReport?.meta.id).toBe(1);
+
+    detailRequest.resolve(nextReport);
+    await selection;
+
+    const settledState = useStockPoolStore.getState();
+    expect(settledState.pendingReportId).toBeNull();
+    expect(settledState.isLoadingReport).toBe(false);
+    expect(settledState.selectedReport?.meta.id).toBe(2);
+    expect(settledState.activeTasks[0]?.stockCode).toBe('600693');
+  });
+
   it('opens same-stock history trend and loads more records', async () => {
     const olderItem = {
       ...historyItem,

@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Check, Minus, X } from 'lucide-react';
 import { backtestApi } from '../api/backtest';
 import type { ParsedApiError } from '../api/error';
@@ -264,7 +264,13 @@ const BacktestPage: React.FC = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [runResult, setRunResult] = useState<BacktestRunResponse | null>(null);
   const [runError, setRunError] = useState<ParsedApiError | null>(null);
-  const [pageError, setPageError] = useState<ParsedApiError | null>(null);
+  const [resultsError, setResultsError] = useState<ParsedApiError | null>(null);
+  const [performanceError, setPerformanceError] = useState<ParsedApiError | null>(null);
+  const pageError = resultsError ?? performanceError;
+  const resultsRequestRef = useRef(0);
+  const performanceRequestRef = useRef(0);
+  const runRequestRef = useRef(0);
+  const runAbortRef = useRef<AbortController | null>(null);
 
   // Results state
   const [results, setResults] = useState<BacktestResultItem[]>([]);
@@ -290,6 +296,7 @@ const BacktestPage: React.FC = () => {
     endDate?: string,
     phase?: BacktestPhaseFilter,
   ) => {
+    const requestId = ++resultsRequestRef.current;
     setIsLoadingResults(true);
     try {
       const response = await backtestApi.getResults({
@@ -301,15 +308,17 @@ const BacktestPage: React.FC = () => {
         page,
         limit: pageSize,
       });
+      if (requestId !== resultsRequestRef.current) return;
       setResults(response.items);
       setTotalResults(response.total);
       setCurrentPage(response.page);
-      setPageError(null);
+      setResultsError(null);
     } catch (err) {
+      if (requestId !== resultsRequestRef.current) return;
       console.error('Failed to fetch backtest results:', err);
-      setPageError(getParsedApiError(err));
+      setResultsError(getParsedApiError(err));
     } finally {
-      setIsLoadingResults(false);
+      if (requestId === resultsRequestRef.current) setIsLoadingResults(false);
     }
   }, []);
 
@@ -321,54 +330,70 @@ const BacktestPage: React.FC = () => {
     endDate?: string,
     phase?: BacktestPhaseFilter,
   ) => {
+    const requestId = ++performanceRequestRef.current;
     setIsLoadingPerf(true);
     try {
-      const overall = await backtestApi.getOverallPerformance({
+      const filters = {
         evalWindowDays: windowDays,
         analysisDateFrom: startDate || undefined,
         analysisDateTo: endDate || undefined,
         analysisPhase: phase && phase !== 'all' ? phase : undefined,
-      });
-      setOverallPerf(overall);
-
-      if (code) {
-        const stock = await backtestApi.getStockPerformance(code, {
-          evalWindowDays: windowDays,
-          analysisDateFrom: startDate || undefined,
-          analysisDateTo: endDate || undefined,
-          analysisPhase: phase && phase !== 'all' ? phase : undefined,
-        });
-        setStockPerf(stock);
-      } else {
-        setStockPerf(null);
-      }
-      setPageError(null);
+      };
+      const [overall, stock] = await Promise.allSettled([
+        backtestApi.getOverallPerformance(filters),
+        code ? backtestApi.getStockPerformance(code, filters) : Promise.resolve(null),
+      ]);
+      if (requestId !== performanceRequestRef.current) return;
+      setOverallPerf(overall.status === 'fulfilled' ? overall.value : null);
+      setStockPerf(stock.status === 'fulfilled' ? stock.value : null);
+      const failure = overall.status === 'rejected' ? overall : stock.status === 'rejected' ? stock : null;
+      setPerformanceError(failure ? getParsedApiError(failure.reason) : null);
     } catch (err) {
+      if (requestId !== performanceRequestRef.current) return;
       console.error('Failed to fetch performance:', err);
-      setPageError(getParsedApiError(err));
+      setPerformanceError(getParsedApiError(err));
     } finally {
-      setIsLoadingPerf(false);
+      if (requestId === performanceRequestRef.current) setIsLoadingPerf(false);
     }
   }, []);
 
   // Initial load — fetch performance first, then filter results by its window
   useEffect(() => {
+    const requestId = ++performanceRequestRef.current;
     const init = async () => {
-      // Get latest performance (unfiltered returns most recent summary)
-      const overall = await backtestApi.getOverallPerformance();
-      setOverallPerf(overall);
-      // Use the summary's eval_window_days to filter results consistently
-      const windowDays = overall?.evalWindowDays;
-      if (windowDays && !evalDays) {
-        setEvalDays(String(windowDays));
+      setIsLoadingPerf(true);
+      let windowDays: number | undefined;
+      try {
+        const overall = await backtestApi.getOverallPerformance();
+        if (requestId !== performanceRequestRef.current) return;
+        setOverallPerf(overall);
+        windowDays = overall?.evalWindowDays;
+        if (windowDays) setEvalDays((current) => current || String(windowDays));
+      } catch (err) {
+        if (requestId !== performanceRequestRef.current) return;
+        setPerformanceError(getParsedApiError(err));
+      } finally {
+        if (requestId === performanceRequestRef.current) setIsLoadingPerf(false);
       }
-      fetchResults(1, undefined, windowDays, undefined, undefined, 'all');
+      if (requestId === performanceRequestRef.current) {
+        void fetchResults(1, undefined, windowDays, undefined, undefined, 'all');
+      }
     };
-    init();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    void init();
+    return () => {
+      resultsRequestRef.current += 1;
+      performanceRequestRef.current += 1;
+      runRequestRef.current += 1;
+      runAbortRef.current?.abort();
+    };
+  }, [fetchResults]);
 
   // Run backtest
   const handleRun = async () => {
+    const requestId = ++runRequestRef.current;
+    runAbortRef.current?.abort();
+    const abortController = new AbortController();
+    runAbortRef.current = abortController;
     setIsRunning(true);
     setRunResult(null);
     setRunError(null);
@@ -377,14 +402,18 @@ const BacktestPage: React.FC = () => {
       const requestedEvalWindowDays = parseEvalWindowDays(evalDays);
       const dateFrom = analysisDateFrom || undefined;
       const dateTo = analysisDateTo || undefined;
-      const response = await backtestApi.run({
-        code,
-        force: forceRerun || undefined,
-        minAgeDays: forceRerun ? 0 : undefined,
-        evalWindowDays: requestedEvalWindowDays,
-        analysisDateFrom: dateFrom,
-        analysisDateTo: dateTo,
-      });
+      const response = await backtestApi.run(
+        {
+          code,
+          force: forceRerun || undefined,
+          minAgeDays: forceRerun ? 0 : undefined,
+          evalWindowDays: requestedEvalWindowDays,
+          analysisDateFrom: dateFrom,
+          analysisDateTo: dateTo,
+        },
+        { signal: abortController.signal },
+      );
+      if (requestId !== runRequestRef.current) return;
       setRunResult(response);
       const effectiveEvalWindowDays =
         response.appliedEvalWindowDays
@@ -398,9 +427,14 @@ const BacktestPage: React.FC = () => {
       fetchResults(1, code, effectiveEvalWindowDays, dateFrom, dateTo, phaseFilter);
       fetchPerformance(code, effectiveEvalWindowDays, dateFrom, dateTo, phaseFilter);
     } catch (err) {
-      setRunError(getParsedApiError(err));
+      if (requestId === runRequestRef.current && !abortController.signal.aborted) {
+        setRunError(getParsedApiError(err));
+      }
     } finally {
-      setIsRunning(false);
+      if (requestId === runRequestRef.current) {
+        runAbortRef.current = null;
+        setIsRunning(false);
+      }
     }
   };
 
@@ -437,7 +471,10 @@ const BacktestPage: React.FC = () => {
   return (
     <div className="min-h-full flex flex-col rounded-[1.5rem] bg-transparent">
       {/* Header */}
-      <header className="flex-shrink-0 border-b border-white/5 px-3 py-3 sm:px-4">
+      <header
+        className="flex-shrink-0 border-b border-white/5 px-3 py-3 sm:px-4"
+        data-onboarding="backtest-controls"
+      >
         <div className="flex max-w-5xl flex-wrap items-center gap-2">
           <div className="relative min-w-0 flex-[1_1_220px]">
             <input

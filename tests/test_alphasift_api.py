@@ -117,7 +117,11 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         return alphasift_endpoint.alphasift_strategies(request=self._request(), config=config)
 
     def _hotspots(self, config: Config, **kwargs):
-        return alphasift_endpoint.alphasift_hotspots(config=config, **kwargs)
+        with (
+            patch.object(alphasift_service, "_HOTSPOT_REFRESH_FUTURE", None),
+            patch.object(alphasift_service, "_HOTSPOT_REFRESH_KEY", None),
+        ):
+            return alphasift_endpoint.alphasift_hotspots(config=config, **kwargs)
 
     def _hotspot_detail(self, config: Config, **kwargs):
         request = kwargs.pop("request", self._request())
@@ -373,6 +377,7 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
                 patch("src.services.alphasift_service.DSA_ALPHASIFT_HOTSPOT_CACHE_PATH", cache_path),
                 patch("src.services.alphasift_service._get_alphasift_status_snapshot", return_value=({}, True, {})),
                 patch("src.services.alphasift_service._import_alphasift_hotspot", return_value=SimpleNamespace(discover_hotspots=discover)),
+                patch.object(alphasift_service.DsaEastMoneyHotspotProvider, "hotspot_rows", return_value=[]),
             ):
                 payload = self._hotspots(config=config, provider="akshare", top=1, refresh=True)
 
@@ -783,6 +788,7 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
             cache_path = data_dir / "hotspots.json"
             history_path = data_dir / "hotspot.history.jsonl"
             with (
+                patch.object(alphasift_service.DsaEastMoneyHotspotProvider, "hotspot_rows", return_value=[]),
                 patch.dict(os.environ, {"ALPHASIFT_DATA_DIR": str(data_dir)}, clear=False),
                 patch("src.services.alphasift_service._get_alphasift_status_snapshot", return_value=({}, True, {})),
                 patch(
@@ -854,7 +860,7 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(cached["hotspots"][0]["canonical_topic"], "算力")
         discover.assert_not_called()
 
-    def test_hotspots_refresh_prefetches_detail_payloads(self) -> None:
+    def test_hotspots_refresh_attaches_only_cached_details(self) -> None:
         config = self._config(enabled=True)
 
         class HotspotRows(list):
@@ -889,7 +895,9 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
                     "src.services.alphasift_service._import_alphasift_hotspot",
                     return_value=SimpleNamespace(discover_hotspots=MagicMock(return_value=rows)),
                 ),
-                patch.object(alphasift_service.AlphaSiftService, "hotspot_detail", side_effect=detail_side_effect) as detail_mock,
+                patch.object(alphasift_service.AlphaSiftService, "hotspot_detail") as detail_mock,
+                patch.object(alphasift_service.DsaEastMoneyHotspotProvider, "hotspot_rows", return_value=[]),
+                patch.object(alphasift_service, "_load_alphasift_hotspot_detail_cache", side_effect=detail_side_effect),
             ):
                 payload = self._hotspots(config=config, provider="akshare", top=2, refresh=True, include_details=True)
 
@@ -897,8 +905,40 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
 
         self.assertEqual(set(payload["details"].keys()), {"Moly", "Copper"})
         self.assertEqual(payload["details"]["Moly"]["route"][0]["title"], "Moly event")
-        self.assertEqual(cache_payload["payload"]["details"]["Copper"]["summary"], "Copper summary")
-        self.assertEqual(detail_mock.call_count, 2)
+        self.assertEqual(len(cache_payload["payload"]["hotspots"]), 2)
+        detail_mock.assert_not_called()
+
+    def test_hotspot_slow_refresh_is_shared_and_polling_returns_completion(self) -> None:
+        service = alphasift_service.AlphaSiftService(self._config(enabled=True))
+        release = threading.Event()
+        calls = []
+
+        def snapshot(**kwargs):
+            if kwargs.get("refresh"):
+                calls.append(1)
+                release.wait(5)
+                return {"hotspots": [{"topic": "new"}], "cached_at": "new-time"}
+            return {"hotspots": [{"topic": "old"}], "cached_at": "old-time"}
+
+        with (
+            patch.object(alphasift_service, "_ensure_alphasift_available_for_use"),
+            patch.object(alphasift_service, "_HOTSPOT_REFRESH_FUTURE", None),
+            patch.object(alphasift_service, "_HOTSPOT_REFRESH_KEY", None),
+            patch.object(alphasift_service, "_HOTSPOT_REFRESH_WAIT_SECONDS", 0.01),
+            patch.object(service, "_hotspots_snapshot", side_effect=snapshot),
+        ):
+            try:
+                first = service.hotspots(refresh=True)
+                second = service.hotspots(refresh=True)
+                self.assertTrue(first["refreshing"])
+                self.assertEqual(second["cached_at"], "old-time")
+                self.assertEqual(len(calls), 1)
+            finally:
+                release.set()
+                alphasift_service._HOTSPOT_REFRESH_FUTURE.result(timeout=2)
+            completed = service.hotspots(refresh=False)
+            self.assertFalse(completed["refreshing"])
+            self.assertEqual(completed["hotspots"][0]["topic"], "new")
 
     def test_hotspot_news_local_summary_extracts_event_instead_of_truncating(self) -> None:
         text = (
@@ -1568,8 +1608,32 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
 
         self.assertEqual(concept.iloc[0]["板块名称"], "玻璃基板")
         self.assertEqual(industry.iloc[0]["板块名称"], "玻璃基板")
-        fetch_board_names.assert_any_call(source_fs="m:90 t:3 f:!50")
-        fetch_board_names.assert_any_call(source_fs="m:90 t:2 f:!50")
+        fetch_board_names.assert_any_call(source_fs="m:90 t:3 f:!50", retry=False)
+        fetch_board_names.assert_any_call(source_fs="m:90 t:2 f:!50", retry=False)
+
+    def test_hotspot_provider_returns_first_available_fallback(self) -> None:
+        import pandas as pd
+
+        provider = alphasift_service.DsaEastMoneyHotspotProvider()
+        release = threading.Event()
+        fast = pd.DataFrame([{"name": "AI算力", "change_pct": 3.5}])
+
+        def slow_rankings(_source: str):
+            release.wait(2)
+            return pd.DataFrame()
+
+        with (
+            patch.object(provider, "_fetch_rankings", side_effect=slow_rankings),
+            patch.object(provider, "_fetch_board_names", return_value=fast),
+        ):
+            started = time.monotonic()
+            try:
+                result = provider._fetch_list_fallbacks(source="concept", source_fs="concept")
+            finally:
+                release.set()
+
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(result.iloc[0]["name"], "AI算力")
 
     def test_hotspot_provider_continues_fallback_when_board_change_fails(self) -> None:
         import pandas as pd

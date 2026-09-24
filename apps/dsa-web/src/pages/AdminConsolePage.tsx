@@ -1,9 +1,10 @@
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
-import { LogOut, RefreshCw, ShieldCheck, UserPlus, Users } from 'lucide-react';
+import { CircleHelp, LogOut, RefreshCw, ShieldCheck, UserPlus, Users } from 'lucide-react';
 import { adminApi, type AdminStatus, type AdminUser, type AuditLogItem } from '../api/admin';
 import { getParsedApiError } from '../api/error';
 import { Button, Input } from '../components/common';
+import { AdminOnboarding, replayOnboarding } from '../components/onboarding';
 
 const roleLabels: Record<string, string> = {
   member: '普通用户',
@@ -124,6 +125,7 @@ const AdminConsolePage: React.FC = () => {
   );
 
   return (
+    <>
     <main className="min-h-[100dvh] bg-base px-5 py-8 text-foreground sm:px-8">
       <div className="mx-auto max-w-6xl">
         <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-6">
@@ -133,7 +135,8 @@ const AdminConsolePage: React.FC = () => {
             <p className="mt-2 text-sm text-secondary-text">当前管理员：{status.user?.displayName}</p>
           </div>
           <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => void refresh()}><RefreshCw className="h-4 w-4" />刷新</Button>
+            <Button variant="secondary" onClick={() => replayOnboarding('admin')}><CircleHelp className="h-4 w-4" />新手导览</Button>
+            <Button variant="secondary" data-onboarding="admin-refresh" onClick={() => void refresh()}><RefreshCw className="h-4 w-4" />刷新</Button>
             <Button variant="secondary" onClick={() => void (async () => { await adminApi.logout(); await refresh(); })()}><LogOut className="h-4 w-4" />退出</Button>
           </div>
         </header>
@@ -141,7 +144,7 @@ const AdminConsolePage: React.FC = () => {
         {error ? <div role="alert" className="mt-5 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">{error}</div> : null}
 
         {canManageUsers ? <section className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
-          <div className="overflow-hidden rounded-2xl border border-border bg-surface">
+          <div className="overflow-hidden rounded-2xl border border-border bg-surface" data-onboarding="admin-users">
             <div className="flex items-center gap-3 border-b border-border px-5 py-4"><Users className="h-5 w-5 text-primary" /><h2 className="font-semibold">平台用户</h2></div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[44rem] text-left text-sm">
@@ -173,14 +176,14 @@ const AdminConsolePage: React.FC = () => {
             <div className="flex items-center gap-3"><UserPlus className="h-5 w-5 text-primary" /><h2 className="font-semibold">邀请用户</h2></div>
             <div className="mt-5 space-y-4">
               <Input label="用户名或邮箱" value={inviteIdentifier} onChange={(event) => setInviteIdentifier(event.target.value)} required />
-              <label className="block text-sm font-medium">角色<select className="input-surface mt-2 h-11 w-full rounded-xl border px-3" value={inviteRole} onChange={(event) => setInviteRole(event.target.value)}><option value="member">普通用户</option><option value="auditor">审计员</option><option value="platform_admin">平台管理员</option></select></label>
+              <label className="block text-sm font-medium">角色<select data-onboarding="admin-role-select" className="input-surface mt-2 h-11 w-full rounded-xl border px-3" value={inviteRole} onChange={(event) => setInviteRole(event.target.value)}><option value="member">普通用户</option><option value="auditor">审计员</option><option value="platform_admin">平台管理员</option></select></label>
             </div>
             <Button type="submit" variant="primary" className="mt-5 w-full" isLoading={busy}>生成邀请</Button>
             {inviteToken ? <div className="mt-5 rounded-xl border border-warning/30 bg-warning/10 p-3"><p className="text-xs font-semibold text-warning">邀请令牌仅显示一次</p><code className="mt-2 block break-all text-xs">{inviteToken}</code></div> : null}
           </form>
         </section> : null}
 
-        <section className="mt-8 overflow-hidden rounded-2xl border border-border bg-surface">
+        <section className="mt-8 overflow-hidden rounded-2xl border border-border bg-surface" data-onboarding="admin-audit-logs">
           <div className="flex items-center gap-3 border-b border-border px-5 py-4"><ShieldCheck className="h-5 w-5 text-primary" /><h2 className="font-semibold">审计日志</h2></div>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[44rem] text-left text-sm">
@@ -193,6 +196,8 @@ const AdminConsolePage: React.FC = () => {
         </section>
       </div>
     </main>
+    {status.user ? <AdminOnboarding user={status.user} /> : null}
+    </>
   );
 };
 

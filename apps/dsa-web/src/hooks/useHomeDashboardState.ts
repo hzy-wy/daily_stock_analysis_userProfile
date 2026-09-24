@@ -27,6 +27,7 @@ export function useHomeDashboardState() {
       isDeletingMarketReviewHistory: state.isDeletingMarketReviewHistory,
       marketReviewHistoryHasMore: state.marketReviewHistoryHasMore,
       selectedReport: state.selectedReport,
+      pendingReportId: state.pendingReportId,
       isLoadingReport: state.isLoadingReport,
       isHistoryTrendOpen: state.isHistoryTrendOpen,
       stockHistoryItems: state.stockHistoryItems,

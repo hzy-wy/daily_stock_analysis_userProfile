@@ -104,6 +104,12 @@ def test_app_and_admin_cookies_coexist_and_logout_independently(multi_user_app) 
         assert client.get("/api/v1/private").status_code == 200
 
 
+def test_multi_user_mode_ignores_stale_disabled_legacy_cache(multi_user_app, monkeypatch):
+    monkeypatch.setattr("src.auth._auth_enabled", False)
+    with TestClient(multi_user_app) as client:
+        assert client.get("/api/v1/private").status_code == 401
+
+
 def test_logout_can_clear_an_expired_or_invalid_session_cookie(multi_user_app) -> None:
     """Logout must stay usable after a server-side session has expired."""
 

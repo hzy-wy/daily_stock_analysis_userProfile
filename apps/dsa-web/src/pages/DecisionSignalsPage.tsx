@@ -1202,6 +1202,7 @@ const DecisionSignalsPage: React.FC = () => {
           )}
         />
 
+        <div data-onboarding="decision-signal-context">
         <Card title={t('decisionSignals.stockContextTitle')} subtitle={t('decisionSignals.stockContextDescription')} padding="md">
           <form
             className="flex flex-col gap-3 md:flex-row"
@@ -1271,6 +1272,7 @@ const DecisionSignalsPage: React.FC = () => {
             <p className="mt-4 text-sm text-secondary-text">{t('decisionSignals.stockContextNoCandidates')}</p>
           ) : null}
         </Card>
+        </div>
 
         <Card padding="md">
           <form className="grid gap-3 md:grid-cols-3 xl:grid-cols-7" onSubmit={handleApplyFilters}>

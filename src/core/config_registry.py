@@ -79,6 +79,10 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     "SQLITE_BUSY_TIMEOUT_MS",
     "SQLITE_WRITE_RETRY_MAX",
     "SQLITE_WRITE_RETRY_BASE_DELAY",
+    # Operational dashboard budgets are configured through deployment environment.
+    "MARKET_DASHBOARD_FETCH_BUDGET_SECONDS",
+    "MARKET_DASHBOARD_CACHE_TTL_SECONDS",
+    "MARKET_DASHBOARD_STALE_TTL_SECONDS",
     "USE_PROXY",
     "PROXY_HOST",
     "PROXY_PORT",
@@ -261,12 +265,12 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "1",
+        "default_value": "2",
         "options": [],
         "validation": {"min": 1, "max": 16},
         "display_order": 1,
         "help_key": "settings.ai_model.GENERATION_BACKEND_MAX_CONCURRENCY",
-        "examples": ["GENERATION_BACKEND_MAX_CONCURRENCY=1"],
+        "examples": ["GENERATION_BACKEND_MAX_CONCURRENCY=2"],
         "docs": [
             {
                 "label": "LLM 配置指南",

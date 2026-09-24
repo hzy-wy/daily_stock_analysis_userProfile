@@ -34,7 +34,7 @@ GENERATION_BACKEND=litellm
 GENERATION_FALLBACK_BACKEND=litellm
 GENERATION_BACKEND_TIMEOUT_SECONDS=300
 GENERATION_BACKEND_MAX_OUTPUT_BYTES=1048576
-GENERATION_BACKEND_MAX_CONCURRENCY=1
+GENERATION_BACKEND_MAX_CONCURRENCY=2
 LOCAL_CLI_BACKEND_MAX_CONCURRENCY=1
 # 可选：留空时使用本机 OpenCode 默认模型；配置时作为 --model 覆盖值传给 OpenCode。
 # OPENCODE_CLI_MODEL=provider/model
@@ -52,7 +52,7 @@ AGENT_GENERATION_BACKEND=auto
 - 本地 CLI backend 不支持 streaming。请求 stream 时会自动降级为 non-stream，不会因此返回 `capability_unsupported`。
 - 本地 CLI usage 通常不可用，系统不会写入 fake 0 token、fake cost 或 fake cache telemetry。
 - `GENERATION_BACKEND_TIMEOUT_SECONDS` 是单次完整生成的总墙钟预算，最大 `3600` 秒。LiteLLM 的流式请求、同模型非流式回退、备用模型和报告完整性重试共享同一预算；即使第三方传输忽略自身 timeout，硬超时也会让分析线程返回，避免阻塞后续调度。该值同时是本地 CLI 的执行上限。等待全局生成并发槽位不计入该预算，避免批量任务仅因安全排队而超时。
-- `GENERATION_BACKEND_MAX_CONCURRENCY` 是 LiteLLM 与本地 CLI 共用的全局生成并发上限，默认 `1`、最大 `16`；行情、新闻和技术指标抓取仍可按 `MAX_WORKERS` 并行，仅模型生成阶段排队。API 配额或上游稳定性不足时建议保持 `1`，确认供应商允许并行后再逐步提高。
+- `GENERATION_BACKEND_MAX_CONCURRENCY` 是 LiteLLM 与本地 CLI 共用的全局生成并发上限，默认 `2`、最大 `16`；行情、新闻和技术指标抓取仍可按 `MAX_WORKERS` 并行，仅模型生成阶段排队。若 API 配额或上游稳定性不足，可调回 `1`；确认供应商允许更高并行后再逐步提高。
 - 本地 CLI 其他执行上限有硬边界：`GENERATION_BACKEND_MAX_OUTPUT_BYTES` 最大 `33554432`，`LOCAL_CLI_BACKEND_MAX_CONCURRENCY` 最大 `4`。诊断 stdout/stderr 与最终响应合计超过输出上限时会返回结构化 `output_too_large`；对 `--output-last-message` preset，stdout 中重复打印的最终响应不会重复计入，也不会作为 `stdout_preview` 暴露。
 - 本地 CLI 默认并发为 1；有效并发为 `min(LOCAL_CLI_BACKEND_MAX_CONCURRENCY, GENERATION_BACKEND_MAX_CONCURRENCY)`，不继承 `MAX_WORKERS`。
 - `AGENT_GENERATION_BACKEND=auto` 不会继承 `GENERATION_BACKEND` 的 local CLI 值；Agent 工具调用继续使用 LiteLLM。Web 设置页仅暴露 `auto|litellm`；手写 `AGENT_GENERATION_BACKEND=codex_cli|claude_code_cli|opencode_cli` 不实现 text-only Agent mode，会返回明确 unsupported tool-calling 诊断。

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from api.auth_dispatch import auth_worker
 from api.deps import require_permission
 from src.auth import ADMIN_COOKIE_NAME, get_client_ip
 from src.services.identity_service import (
@@ -52,7 +53,8 @@ def _secure_cookie(request: Request) -> bool:
 
 
 @router.get("/auth/status", summary="Get administrator session status")
-async def admin_auth_status(request: Request):
+@auth_worker
+def admin_auth_status(request: Request):
     if not is_multi_user_mode():
         return {
             "authMode": "legacy",
@@ -82,7 +84,8 @@ async def admin_auth_status(request: Request):
 
 
 @router.post("/auth/login", summary="Create an administrator session")
-async def admin_auth_login(request: Request, body: AdminLoginRequest):
+@auth_worker
+def admin_auth_login(request: Request, body: AdminLoginRequest):
     if not is_multi_user_mode():
         return JSONResponse(
             status_code=404,
@@ -144,7 +147,8 @@ async def admin_auth_login(request: Request, body: AdminLoginRequest):
 
 
 @router.post("/auth/logout", summary="Revoke the current administrator session")
-async def admin_auth_logout(request: Request):
+@auth_worker
+def admin_auth_logout(request: Request):
     get_identity_service().revoke_session(
         request.cookies.get(ADMIN_COOKIE_NAME, ""),
         ADMIN_AUDIENCE,
@@ -156,14 +160,16 @@ async def admin_auth_logout(request: Request):
 
 
 @router.get("/users", summary="List platform users")
-async def list_users(
+@auth_worker
+def list_users(
     _principal: Principal = Depends(require_permission("users.manage")),
 ):
     return {"users": get_identity_service().list_users()}
 
 
 @router.post("/invitations", summary="Invite a user")
-async def create_invitation(
+@auth_worker
+def create_invitation(
     body: InvitationCreateRequest,
     principal: Principal = Depends(require_permission("users.manage")),
 ):
@@ -183,7 +189,8 @@ async def create_invitation(
 
 
 @router.put("/users/{user_id}/status", summary="Change a user account status")
-async def update_user_status(
+@auth_worker
+def update_user_status(
     user_id: str,
     body: UserStatusRequest,
     principal: Principal = Depends(require_permission("users.manage")),
@@ -202,7 +209,8 @@ async def update_user_status(
 
 
 @router.put("/users/{user_id}/role", summary="Replace a user's platform role")
-async def update_user_role(
+@auth_worker
+def update_user_role(
     user_id: str,
     body: UserRoleRequest,
     principal: Principal = Depends(require_permission("users.manage")),
@@ -221,7 +229,8 @@ async def update_user_role(
 
 
 @router.get("/audit-logs", summary="Read security and administrative audit logs")
-async def list_audit_logs(
+@auth_worker
+def list_audit_logs(
     limit: int = Query(100, ge=1, le=500),
     _principal: Principal = Depends(require_permission("audit.read")),
 ):

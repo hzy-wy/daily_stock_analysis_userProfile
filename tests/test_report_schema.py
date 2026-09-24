@@ -20,6 +20,7 @@ except ModuleNotFoundError:
     sys.modules["litellm"] = MagicMock()
 
 from src.schemas.report_schema import AnalysisReportSchema
+import src.analyzer as analyzer_module
 from src.analyzer import GeminiAnalyzer, AnalysisResult
 
 
@@ -297,6 +298,84 @@ class TestAnalyzerSchemaFallback(unittest.TestCase):
             analyzer._validate_json_response('{"sentiment_score": 70} {"sentiment_score": 80}')
 
         self.assertEqual(getattr(context.exception, "details", {}).get("reason"), "ambiguous_json")
+
+    def test_validate_json_response_repairs_truncated_object_with_minimal_contract(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+        partial_response = '''{
+          "sentiment_score": 67,
+          "trend_prediction": "看多",
+          "operation_advice": "持有",
+          "analysis_summary": "趋势仍偏强",
+          "dashboard": {"core_conclusion": {"one_sentence": "等待确认"'''
+
+        analyzer._validate_json_response(partial_response)
+        result = analyzer._parse_response(partial_response, "600519", "贵州茅台")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.sentiment_score, 67)
+        self.assertEqual(result.dashboard["core_conclusion"]["one_sentence"], "等待确认")
+
+    def test_missing_summary_is_left_for_integrity_retry_instead_of_generic_text(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        result = analyzer._parse_response(
+            '{"sentiment_score": 60, "trend_prediction": "看多", "operation_advice": "观望"}',
+            "600519",
+            "贵州茅台",
+        )
+
+        self.assertEqual(result.analysis_summary, "")
+
+    def test_methodology_fallback_uses_only_collected_evidence(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        result = AnalysisResult(
+            code="600737",
+            name="中粮糖业",
+            sentiment_score=56,
+            trend_prediction="看多",
+            operation_advice="观望",
+        )
+        summary = analyzer._build_methodology_fallback_summary(
+            result,
+            {
+                "today": {"close": 16.03, "ma5": 15.04, "ma10": 14.93, "ma20": 13.99, "is_estimated": True},
+                "realtime": {"price": 16.03, "change_pct": 4.57, "volume_ratio": 1.33, "turnover_rate": 5.28},
+                "trend_analysis": {
+                    "ma_alignment": "多头排列 MA5>MA10>MA20",
+                    "bias_ma5": 6.6,
+                    "signal_reasons": ["多头排列，顺势做多"],
+                    "risk_factors": ["乖离率过高，严禁追高"],
+                },
+                "fundamental_context": {"status": "partial"},
+                "market_structure_context": {"status": "partial"},
+            },
+            report_language="zh",
+        )
+
+        self.assertIn("MA5/10/20 为 15.04/14.93/13.99", summary)
+        self.assertIn("乖离率过高，严禁追高", summary)
+        self.assertIn("题材榜单证据不完整", summary)
+        self.assertIn("趋势—位置—量价—题材/基本面—风险", summary)
+
+    def test_stream_unavailable_capability_entry_expires(self) -> None:
+        model = "test/temporary-no-stream"
+        with analyzer_module._LITELLM_STREAM_UNAVAILABLE_LOCK:
+            analyzer_module._LITELLM_STREAM_UNAVAILABLE_UNTIL.pop(model, None)
+        try:
+            self.assertTrue(analyzer_module._can_attempt_litellm_stream(model, now=100.0))
+            analyzer_module._mark_litellm_stream_unavailable(model, now=100.0)
+            self.assertFalse(analyzer_module._can_attempt_litellm_stream(model, now=101.0))
+            self.assertTrue(
+                analyzer_module._can_attempt_litellm_stream(
+                    model,
+                    now=100.0 + analyzer_module._LITELLM_STREAM_UNAVAILABLE_COOLDOWN_SECONDS,
+                )
+            )
+        finally:
+            with analyzer_module._LITELLM_STREAM_UNAVAILABLE_LOCK:
+                analyzer_module._LITELLM_STREAM_UNAVAILABLE_UNTIL.pop(model, None)
 
     def test_validate_json_response_rejects_generic_fence_with_outside_text(self) -> None:
         analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)

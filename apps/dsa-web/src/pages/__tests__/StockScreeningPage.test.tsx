@@ -655,6 +655,25 @@ describe('StockScreeningPage', () => {
     expect(screen.getByText('工业富联')).toBeInTheDocument();
   });
 
+  it('polls a background refresh and replaces old cards when complete', async () => {
+    getAlphaSiftStatus.mockResolvedValueOnce({ enabled: true, available: true });
+    const previous = { hotspots: [{ topic: '旧题材', heatScore: 80 }], cachedAt: '2026-08-28T10:00:00Z' };
+    getHotspots.mockResolvedValueOnce(previous)
+      .mockResolvedValueOnce({ ...previous, refreshing: true, message: '正在更新热点题材，暂时展示上次数据。' })
+      .mockResolvedValueOnce({ hotspots: [{ topic: '新题材', heatScore: 85 }], refreshing: false, cachedAt: '2026-08-29T10:00:00Z' });
+    render(<StockScreeningPage />);
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
+    expect(await screen.findByText('旧题材')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /刷新热点题材/ }));
+    expect(await screen.findByText('正在更新热点题材，暂时展示上次数据。')).toBeInTheDocument();
+    expect(screen.getByText('旧题材')).toBeInTheDocument();
+    expect(await screen.findByText('新题材', {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(screen.queryByText('旧题材')).not.toBeInTheDocument();
+    expect(getHotspots).toHaveBeenLastCalledWith({ provider: 'akshare', top: 12, refresh: false });
+    expect(screen.getByRole('button', { name: /刷新热点题材/ })).toBeEnabled();
+  });
+
   it('keeps existing hotspot cards when manual refresh fails', async () => {
     getAlphaSiftStatus.mockResolvedValueOnce({
       enabled: true,

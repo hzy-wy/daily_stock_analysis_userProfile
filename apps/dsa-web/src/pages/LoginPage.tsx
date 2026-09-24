@@ -6,7 +6,7 @@ import { ArrowRight, Cpu, Eye, LineChart, Lock, ShieldCheck, Sparkles } from 'lu
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { ParsedApiError } from '../api/error';
 import { isParsedApiError } from '../api/error';
-import { Button, Input, ParticleBackground } from '../components/common';
+import { Button, Input, ParticleBackground, ThemeToggle } from '../components/common';
 import { UiLanguageToggle } from '../components/i18n/UiLanguageToggle';
 import { SettingsAlert } from '../components/settings';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
@@ -227,8 +227,9 @@ const LoginPage: React.FC = () => {
       <div ref={primaryGlowRef} className="login-ambient login-ambient--primary" aria-hidden="true" />
       <div ref={secondaryGlowRef} className="login-ambient login-ambient--secondary" aria-hidden="true" />
 
-      <div className="absolute right-4 top-4 z-30">
+      <div className="absolute right-4 top-4 z-30 flex items-start gap-2">
         <UiLanguageToggle />
+        <ThemeToggle />
       </div>
 
       <section className="relative z-10 flex min-h-[42vh] items-end px-5 pb-8 pt-20 sm:px-8 lg:min-h-[100dvh] lg:items-center lg:px-12 lg:py-16 xl:px-20">

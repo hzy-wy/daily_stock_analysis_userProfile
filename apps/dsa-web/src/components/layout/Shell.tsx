@@ -1,6 +1,7 @@
 import type React from 'react';
 import { Outlet } from 'react-router-dom';
 import { FloatingStockAssistant } from '../assistant';
+import { WorkspaceOnboarding } from '../onboarding';
 import { CommandNavigation } from './CommandNavigation';
 import { PointerSpotlight } from './PointerSpotlight';
 
@@ -25,6 +26,7 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
         </main>
       </div>
       <FloatingStockAssistant />
+      <WorkspaceOnboarding />
     </div>
   );
 };

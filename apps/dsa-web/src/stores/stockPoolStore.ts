@@ -74,6 +74,7 @@ export interface StockPoolState {
   marketReviewHistoryHasMore: boolean;
   marketReviewHistoryPage: number;
   selectedReport: AnalysisReport | null;
+  pendingReportId: number | null;
   isLoadingReport: boolean;
   isHistoryTrendOpen: boolean;
   stockHistoryItems: HistoryItem[];
@@ -147,6 +148,7 @@ const initialState = {
   marketReviewHistoryHasMore: false,
   marketReviewHistoryPage: 1,
   selectedReport: null as AnalysisReport | null,
+  pendingReportId: null as number | null,
   isLoadingReport: false,
   isHistoryTrendOpen: false,
   stockHistoryItems: [] as HistoryItem[],
@@ -701,11 +703,14 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
       manualSelectionRequestSeq += 1;
       manualSelectionRequestId = requestId;
     }
-    const shouldShowInitialLoading = !get().selectedReport;
-
-    if (shouldShowInitialLoading) {
-      set({ isLoadingReport: true });
-    }
+    // Selection feedback is immediate and independent from any running analysis.
+    // Keep the previous report in memory for recovery, but switch the visible
+    // panel to its loading state until the requested detail arrives.
+    set({
+      pendingReportId: recordId,
+      isLoadingReport: true,
+      error: null,
+    });
 
     try {
       const report = normalizeSelectedReport(await historyApi.getDetail(recordId));
@@ -715,6 +720,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
 
       set({
         selectedReport: report,
+        pendingReportId: null,
         error: null,
         isLoadingReport: false,
       });
@@ -736,6 +742,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
 
       set({
         error: getParsedApiError(error),
+        pendingReportId: null,
         isLoadingReport: false,
       });
     } finally {

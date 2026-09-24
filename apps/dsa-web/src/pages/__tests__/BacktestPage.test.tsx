@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
@@ -91,6 +91,44 @@ beforeEach(() => {
 });
 
 describe('BacktestPage', () => {
+  it('still loads results when the initial summary fails', async () => {
+    mockGetOverallPerformance.mockRejectedValueOnce(new Error('summary unavailable'));
+    render(<BacktestPage />);
+    expect(await screen.findByText('600519')).toBeInTheDocument();
+    expect(mockGetResults).toHaveBeenCalled();
+  });
+
+  it('starts stock and overall performance requests together', async () => {
+    render(<BacktestPage />);
+    await screen.findByText('600519');
+    let release!: (value: typeof basePerformance) => void;
+    mockGetOverallPerformance.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    fireEvent.change(screen.getByPlaceholderText('按股票代码筛选（留空表示全部）'), { target: { value: 'AAPL' } });
+    fireEvent.click(screen.getByRole('button', { name: '筛选' }));
+    await waitFor(() => expect(mockGetStockPerformance).toHaveBeenCalledWith('AAPL', expect.any(Object)));
+    await act(async () => { release(basePerformance); });
+  });
+
+  it('keeps the newest filter results when an older request finishes later', async () => {
+    render(<BacktestPage />);
+    await screen.findByText('600519');
+    let release!: (value: unknown) => void;
+    mockGetResults.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const input = screen.getByPlaceholderText('按股票代码筛选（留空表示全部）');
+    fireEvent.change(input, { target: { value: 'AAPL' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    mockGetResults.mockResolvedValueOnce({ total: 1, page: 1, limit: 20,
+      items: [{ ...baseResultItem, code: 'MSFT', stockName: 'Microsoft' }] });
+    fireEvent.change(input, { target: { value: 'MSFT' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await screen.findByText('MSFT');
+    await act(async () => {
+      release({ total: 1, page: 1, limit: 20, items: [{ ...baseResultItem, code: 'AAPL' }] });
+    });
+    expect(screen.getByText('MSFT')).toBeInTheDocument();
+    expect(screen.queryByText('AAPL')).not.toBeInTheDocument();
+  });
+
   function renderEnglishPage() {
     window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
     render(
@@ -288,7 +326,7 @@ describe('BacktestPage', () => {
         evalWindowDays: 15,
         analysisDateFrom: '2026-03-01',
         analysisDateTo: '2026-03-31',
-      });
+      }, { signal: expect.any(AbortSignal) });
     });
 
     await waitFor(() => {
@@ -346,7 +384,7 @@ describe('BacktestPage', () => {
         evalWindowDays: undefined,
         analysisDateFrom: '2026-03-01',
         analysisDateTo: '2026-03-31',
-      });
+      }, { signal: expect.any(AbortSignal) });
     });
 
     await waitFor(() => {

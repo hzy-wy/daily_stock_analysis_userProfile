@@ -16,6 +16,7 @@ from typing import Optional
 import re
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, Depends
+from starlette.concurrency import run_in_threadpool
 
 from api.deps import get_system_config_service
 
@@ -233,7 +234,7 @@ async def parse_import(request: Request) -> ExtractFromImageResponse:
                 detail={"error": "bad_request", "message": "未提供 text，请使用 {\"text\": \"...\"}"},
             )
         try:
-            items = parse_import_from_text(text)
+            items = await run_in_threadpool(parse_import_from_text, text)
         except ValueError as e:
             text_bytes = len(text.encode("utf-8"))
             logger.warning(
@@ -260,8 +261,8 @@ async def parse_import(request: Request) -> ExtractFromImageResponse:
                 },
             )
         try:
-            data = file.file.read(MAX_FILE_BYTES)
-            if file.file.read(1):
+            data = await file.read(MAX_FILE_BYTES + 1)
+            if len(data) > MAX_FILE_BYTES:
                 raise HTTPException(
                     status_code=400,
                     detail={
@@ -286,7 +287,7 @@ async def parse_import(request: Request) -> ExtractFromImageResponse:
             )
         filename = getattr(file, "filename", None) or ""
         try:
-            items = parse_import_from_bytes(data, filename=filename)
+            items = await run_in_threadpool(parse_import_from_bytes, data, filename=filename)
         except ValueError as e:
             ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
             logger.warning(

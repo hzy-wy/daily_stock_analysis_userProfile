@@ -41,6 +41,107 @@ type PreparedBoard = {
   signal?: BoardSignal;
 };
 
+type UnknownRecord = Record<string, unknown>;
+
+const asRecord = (value: unknown): UnknownRecord => (
+  value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : {}
+);
+
+const readRecordValue = (record: UnknownRecord, camelKey: string, snakeKey: string): unknown => (
+  record[camelKey] ?? record[snakeKey]
+);
+
+const isGenericAnalysisSummary = (value?: string): boolean => {
+  const normalized = (value || '').trim();
+  return ['', '分析完成', 'Analysis completed', '분석 완료', '暂无分析摘要'].includes(normalized);
+};
+
+const formatEvidenceNumber = (value: unknown, digits = 2): string | null => {
+  const parsed = coerceFiniteNumber(value);
+  return parsed === undefined ? null : parsed.toFixed(digits);
+};
+
+const buildSnapshotMethodologySummary = (
+  originalSummary: string,
+  meta: ReportMeta,
+  details?: ReportDetailsType,
+): string => {
+  if (!isGenericAnalysisSummary(originalSummary)) {
+    return originalSummary;
+  }
+
+  const snapshot = asRecord(details?.contextSnapshot);
+  const enhanced = asRecord(readRecordValue(snapshot, 'enhancedContext', 'enhanced_context'));
+  const today = asRecord(enhanced.today);
+  const realtime = asRecord(enhanced.realtime);
+  const trend = asRecord(readRecordValue(enhanced, 'trendAnalysis', 'trend_analysis'));
+  const fundamental = asRecord(readRecordValue(enhanced, 'fundamentalContext', 'fundamental_context'));
+  const marketStructure = asRecord(readRecordValue(enhanced, 'marketStructureContext', 'market_structure_context'));
+
+  const price = formatEvidenceNumber(realtime.price ?? today.close ?? meta.currentPrice);
+  const change = coerceFiniteNumber(realtime.changePct ?? realtime.change_pct ?? today.pctChg ?? today.pct_chg ?? meta.changePct);
+  const ma5 = formatEvidenceNumber(today.ma5);
+  const ma10 = formatEvidenceNumber(today.ma10);
+  const ma20 = formatEvidenceNumber(today.ma20);
+  const biasMa5 = formatEvidenceNumber(readRecordValue(trend, 'biasMa5', 'bias_ma5'), 1);
+  const volumeRatio = formatEvidenceNumber(realtime.volumeRatio ?? realtime.volume_ratio ?? today.volumeRatio ?? today.volume_ratio);
+  const turnoverRate = formatEvidenceNumber(realtime.turnoverRate ?? realtime.turnover_rate);
+  const alignment = String(readRecordValue(trend, 'maAlignment', 'ma_alignment') || trend.trendStatus || trend.trend_status || '').trim();
+  const rawReasons = readRecordValue(trend, 'signalReasons', 'signal_reasons');
+  const reasons = Array.isArray(rawReasons)
+    ? rawReasons.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).slice(0, 2)
+    : [];
+  const rawRisks = readRecordValue(trend, 'riskFactors', 'risk_factors');
+  const risks = Array.isArray(rawRisks)
+    ? rawRisks.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).slice(0, 2)
+    : [];
+
+  if (!price && !alignment && reasons.length === 0 && risks.length === 0) {
+    return originalSummary || '本次报告缺少可验证的核心摘要，请重新分析后再决策。';
+  }
+
+  const technicalEvidence = [
+    price ? `最新价 ${price} 元${change === undefined ? '' : `，当日涨跌 ${change >= 0 ? '+' : ''}${change.toFixed(2)}%`}` : '',
+    alignment,
+    ma5 && ma10 && ma20 ? `MA5/10/20 为 ${ma5}/${ma10}/${ma20}` : '',
+    biasMa5 ? `相对 MA5 乖离 ${biasMa5}%` : '',
+    volumeRatio ? `量比 ${volumeRatio}` : '',
+    turnoverRate ? `换手率 ${turnoverRate}%` : '',
+  ].filter(Boolean).join('；');
+
+  const dataBoundaries: string[] = [];
+  const valuation = asRecord(fundamental.valuation);
+  const valuationData = asRecord(valuation.data);
+  const pe = formatEvidenceNumber(readRecordValue(valuationData, 'peRatio', 'pe_ratio'));
+  const pb = formatEvidenceNumber(readRecordValue(valuationData, 'pbRatio', 'pb_ratio'));
+  if (pe || pb) dataBoundaries.push(`估值快照 ${[pe && `PE ${pe}`, pb && `PB ${pb}`].filter(Boolean).join('、')}`);
+  if (String(fundamental.status || '') === 'partial' || String(fundamental.status || '') === 'failed') {
+    dataBoundaries.push('成长、业绩或资金字段存在缺口，不据此做确定性判断');
+  }
+  if (['partial', 'unknown'].includes(String(marketStructure.status || ''))) {
+    dataBoundaries.push('题材强弱榜单证据不完整，板块归属仅作联动线索');
+  }
+  if (today.isEstimated === true || today.is_estimated === true) {
+    dataBoundaries.push('当日行情含实时估算字段，收盘后应以最终日线复核');
+  }
+
+  const score = Number.isFinite(Number((details?.rawResult || {}).sentimentScore ?? (details?.rawResult || {}).sentiment_score))
+    ? Number((details?.rawResult || {}).sentimentScore ?? (details?.rawResult || {}).sentiment_score)
+    : null;
+  const trendPrediction = String((details?.rawResult || {}).trendPrediction ?? (details?.rawResult || {}).trend_prediction ?? '').trim();
+  const actionAdvice = String((details?.rawResult || {}).operationAdvice ?? (details?.rawResult || {}).operation_advice ?? '').trim();
+  const conclusion = [trendPrediction || '趋势待确认', actionAdvice ? `建议${actionAdvice}` : '', score !== null ? `评分 ${score}/100` : ''].filter(Boolean).join('；');
+
+  return [
+    `【系统证据链】${conclusion}。`,
+    `【技术验证】${technicalEvidence || '技术字段不完整，暂不延伸判断'}。`,
+    reasons.length ? `【信号依据】${reasons.join('；')}。` : '',
+    `【风险约束】${risks.length ? risks.join('；') : '未取得可验证的模型风险文本，需按止损位和确认条件执行'}。`,
+    dataBoundaries.length ? `【数据边界】${dataBoundaries.join('；')}。` : '',
+    '【方法与纪律】按“趋势—位置—量价—题材/基本面—风险”逐项核验；趋势向好不等于可追高，任一风险门槛未通过时应等待回踩、量能确认或重新分析。',
+  ].filter(Boolean).join('\n');
+};
+
 const normalizeBoardName = (value?: string): string =>
   (value || '').trim().replace(/\s+/g, ' ');
 
@@ -178,6 +279,7 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
     .filter((board) => normalizeBoardName(board?.name).length > 0);
   const boardSignals = buildBoardSignalMaps(details);
   const preparedRelatedBoards = buildPreparedRelatedBoards(relatedBoards, boardSignals);
+  const coreInsight = buildSnapshotMethodologySummary(summary.analysisSummary, meta, details);
 
   const getPriceChangeStyle = (changePct: number | undefined): React.CSSProperties | undefined => {
     if (changePct === undefined || changePct === null) {
@@ -296,7 +398,7 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
             <div className="home-divider border-t pt-5">
               <span className="label-uppercase">{text.keyInsights}</span>
               <p className="mt-2 max-w-[62ch] whitespace-pre-wrap text-left text-[15px] leading-7 text-foreground">
-                {summary.analysisSummary || text.noAnalysisSummary}
+                {coreInsight || text.noAnalysisSummary}
               </p>
             </div>
           </Card>

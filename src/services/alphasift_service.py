@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from contextvars import ContextVar
+from concurrent.futures import FIRST_COMPLETED, Future, TimeoutError as FutureTimeoutError, wait
 from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
@@ -34,6 +35,11 @@ ALPHASIFT_DSA_ADAPTER_MODULE = "alphasift.dsa_adapter"
 ALPHASIFT_EXPECTED_MISSING_MODULES = frozenset({"alphasift", ALPHASIFT_DSA_ADAPTER_MODULE})
 ALLOWED_ALPHASIFT_INSTALL_SPECS = frozenset({DEFAULT_ALPHASIFT_INSTALL_SPEC})
 _ALPHASIFT_INSTALL_LOCK = threading.RLock()
+_HOTSPOT_REFRESH_LOCK = threading.Lock()
+_HOTSPOT_REFRESH_FUTURE: Optional[Future] = None
+_HOTSPOT_REFRESH_KEY: Optional[tuple] = None
+_HOTSPOT_REFRESH_COMPLETED_AT = 0.0
+_HOTSPOT_REFRESH_WAIT_SECONDS = 0.05
 ALPHASIFT_MANAGED_LITELLM_PROVIDERS = frozenset({"gemini", "vertex_ai", "anthropic", "openai", "deepseek"})
 _ALPHASIFT_RUNTIME_ENV_LOCK = threading.RLock()
 DSA_ENRICHMENT_MAX_CANDIDATES = 3
@@ -864,6 +870,64 @@ class AlphaSiftService:
         refresh: bool = False,
         include_details: bool = False,
     ) -> Dict[str, Any]:
+        """Bound HTTP waiting and share one live refresh per server process."""
+        global _HOTSPOT_REFRESH_FUTURE, _HOTSPOT_REFRESH_KEY
+        _ensure_alphasift_enabled(self.config)
+        _ensure_alphasift_available_for_use()
+        provider_name, _ = _resolve_hotspot_provider(provider)
+        top_count = max(1, min(int(top or 12), 50))
+        key = (str(_alphasift_hotspot_cache_path().resolve()), provider_name, top_count)
+        with _HOTSPOT_REFRESH_LOCK:
+            future = _HOTSPOT_REFRESH_FUTURE
+            if refresh and (future is None or future.done()):
+                future = Future()
+                _HOTSPOT_REFRESH_FUTURE = future
+                _HOTSPOT_REFRESH_KEY = key
+
+                def run_refresh(result: Future = future) -> None:
+                    global _HOTSPOT_REFRESH_COMPLETED_AT
+                    try:
+                        payload = self._hotspots_snapshot(
+                            provider=provider_name, top=top_count, refresh=True,
+                        )
+                    except Exception as exc:
+                        logger.exception("AlphaSift background hotspot refresh failed")
+                        _HOTSPOT_REFRESH_COMPLETED_AT = time.monotonic()
+                        result.set_exception(exc)
+                    else:
+                        _HOTSPOT_REFRESH_COMPLETED_AT = time.monotonic()
+                        result.set_result(payload)
+
+                threading.Thread(target=run_refresh, name="hotspot-refresh", daemon=True).start()
+            matching = _HOTSPOT_REFRESH_KEY == key
+            if future is not None and future.done() and time.monotonic() - _HOTSPOT_REFRESH_COMPLETED_AT > 120:
+                matching = False
+
+        if future is not None and matching:
+            try:
+                payload = dict(future.result(timeout=_HOTSPOT_REFRESH_WAIT_SECONDS if refresh else 0))
+            except FutureTimeoutError:
+                if future.done():
+                    raise
+                payload = self._hotspots_snapshot(provider=provider_name, top=top_count)
+                payload["refreshing"] = True
+                payload["message"] = "正在更新热点题材，暂时展示上次数据。"
+            else:
+                payload["refreshing"] = False
+        else:
+            payload = self._hotspots_snapshot(provider=provider_name, top=top_count)
+            if refresh and future is not None and not future.done():
+                payload["message"] = "其他热点刷新正在进行，请稍后重试。"
+        return _attach_cached_hotspot_details(payload, provider=provider_name, top=top_count) if include_details else payload
+
+    def _hotspots_snapshot(
+        self,
+        *,
+        provider: str = "",
+        top: int = 12,
+        refresh: bool = False,
+        include_details: bool = False,
+    ) -> Dict[str, Any]:
         _ensure_alphasift_enabled(self.config)
         _ensure_alphasift_available_for_use()
         provider_name, provider_arg = _resolve_hotspot_provider(provider)
@@ -902,6 +966,8 @@ class AlphaSiftService:
                 cached["source_errors"] = errors
                 cached["fallback_used"] = True
                 cached["cache_used"] = True
+                cached["stale"] = True
+                cached["message"] = "热点源暂时不可用，保留上次数据，请稍后重试。"
                 return _attach_cached_hotspot_details(cached, provider=provider_name, top=top_count) if include_details else cached
             if not _should_return_eastmoney_hotspot_unavailable(provider_arg, exc):
                 diagnostics = _log_unexpected_alphasift_exception("hotspot_refresh", exc)
@@ -948,6 +1014,8 @@ class AlphaSiftService:
                 cached["source_errors"] = errors
                 cached["fallback_used"] = True
                 cached["cache_used"] = True
+                cached["stale"] = True
+                cached["message"] = "热点源暂时不可用，保留上次数据，请稍后重试。"
                 return _attach_cached_hotspot_details(cached, provider=provider_name, top=top_count) if include_details else cached
             if _has_degraded_eastmoney_hotspot_failure(provider_arg, source_errors):
                 return _empty_alphasift_hotspot_payload(
@@ -970,34 +1038,12 @@ class AlphaSiftService:
             "hotspots": selected,
             "hotspot_count": len(selected),
         }
-        if selected and include_details:
-            payload = self._prefetch_hotspot_details(payload, provider=provider_name, refresh=False)
-        if selected:
+        if selected and not payload["stale"]:
+            payload["cached_at"] = _utc_now_iso()
             _write_alphasift_hotspot_cache(payload)
+        if selected and include_details:
+            payload = _attach_cached_hotspot_details(payload, provider=provider_name, top=top_count)
         return payload
-
-    def _prefetch_hotspot_details(self, payload: Dict[str, Any], *, provider: str, refresh: bool) -> Dict[str, Any]:
-        rows = payload.get("hotspots")
-        if not isinstance(rows, list) or not rows:
-            return payload
-        details = dict(payload.get("details") if isinstance(payload.get("details"), dict) else {})
-        source_errors = _list_text_values(payload.get("source_errors"))
-        for row in rows[:DSA_ALPHASIFT_HOTSPOT_PREFETCH_DETAIL_COUNT]:
-            topic = _hotspot_topic_from_row(row)
-            if not topic or (topic in details and not refresh):
-                continue
-            try:
-                details[topic] = self.hotspot_detail(topic=topic, provider=provider, refresh=refresh)
-            except HTTPException as exc:
-                source_errors.append(f"hotspot_detail_prefetch_failed:{topic}:{exc.detail}")
-            except Exception as exc:
-                source_errors.append(f"hotspot_detail_prefetch_failed:{topic}:{exc}")
-        attached = dict(payload)
-        if details:
-            attached["details"] = _remove_non_finite_json_values(details)
-        if source_errors:
-            attached["source_errors"] = source_errors
-        return attached
 
     def hotspot_detail(self, *, topic: str, provider: str = "", refresh: bool = False) -> Dict[str, Any]:
         _ensure_alphasift_enabled(self.config)
@@ -1999,6 +2045,8 @@ class DsaEastMoneyHotspotProvider:
 
     _BASE_URL = "https://push2.eastmoney.com/api/qt/clist/get"
     _HTTP_TIMEOUT_SECONDS = 8
+    _HOTSPOT_LIST_TIMEOUT_SECONDS = 4
+    _BOARD_CHANGE_TIMEOUT_SECONDS = 3
     _COMMON_PARAMS = {
         "pn": "1",
         "po": "1",
@@ -2099,6 +2147,7 @@ class DsaEastMoneyHotspotProvider:
         import requests
 
         self._board_changes_raw_cache: Any = None
+        self._board_changes_error: Optional[Exception] = None
         self._board_changes_frame_cache: Any = None
         self._constituent_cache: Dict[Tuple[str, str], Any] = {}
         self._session = requests.Session()
@@ -2146,10 +2195,10 @@ class DsaEastMoneyHotspotProvider:
         frame = self._fetch_board_changes_with_fallback()
         if frame is not None and not frame.empty:
             return frame
-        frame = self._fetch_rankings_with_fallback("concept")
-        if frame is not None and not frame.empty:
-            return frame
-        return self._fetch_board_names(source_fs="m:90 t:3 f:!50")
+        return self._fetch_list_fallbacks(
+            source="concept",
+            source_fs="m:90 t:3 f:!50",
+        )
 
     def stock_board_industry_name_em(self) -> Any:
         concept_frame = self._fetch_board_changes_with_fallback()
@@ -2157,10 +2206,51 @@ class DsaEastMoneyHotspotProvider:
             import pandas as pd
 
             return pd.DataFrame()
-        frame = self._fetch_rankings_with_fallback("industry")
-        if frame is not None and not frame.empty:
-            return frame
-        return self._fetch_board_names(source_fs="m:90 t:2 f:!50")
+        return self._fetch_list_fallbacks(
+            source="industry",
+            source_fs="m:90 t:2 f:!50",
+        )
+
+    def _fetch_list_fallbacks(self, *, source: str, source_fs: str) -> Any:
+        """Race independent fallbacks so a slow source does not delay hotspot ranking."""
+        import pandas as pd
+
+        futures = [Future(), Future()]
+        tasks = (
+            lambda: self._fetch_rankings(source),
+            lambda: self._fetch_board_names(source_fs=source_fs, retry=False),
+        )
+
+        def run(target: Any, result: Future) -> None:
+            try:
+                result.set_result(target())
+            except BaseException as exc:
+                result.set_exception(exc)
+
+        for index, task in enumerate(tasks):
+            threading.Thread(
+                target=run,
+                args=(task, futures[index]),
+                daemon=True,
+                name=f"alphasift-{source}-fallback-{index}",
+            ).start()
+
+        pending = set(futures)
+        deadline = time.monotonic() + self._HOTSPOT_LIST_TIMEOUT_SECONDS + 0.25
+        while pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            completed, pending = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
+            for future in completed:
+                try:
+                    frame = future.result()
+                except Exception as exc:
+                    logger.warning("AlphaSift hotspot %s fallback failed: %s", source, exc)
+                    continue
+                if frame is not None and not frame.empty:
+                    return frame
+        return pd.DataFrame()
 
     def hotspot_rows(self, *, top: int = 12) -> List[Dict[str, Any]]:
         import pandas as pd
@@ -2331,10 +2421,22 @@ class DsaEastMoneyHotspotProvider:
 
     def _fetch_board_changes_raw(self) -> Any:
         import akshare as ak
+        from src.services.market_hotspot_service import MarketHotspotService
 
+        if self._board_changes_error is not None:
+            raise self._board_changes_error
         if self._board_changes_raw_cache is not None:
             return self._board_changes_raw_cache.copy()
-        df = ak.stock_board_change_em()
+        try:
+            df = MarketHotspotService._call_with_timeout(
+                ak.stock_board_change_em,
+                timeout_seconds=self._BOARD_CHANGE_TIMEOUT_SECONDS,
+                task_name="alphasift_board_changes",
+                inflight_key="alphasift_board_changes",
+            )
+        except Exception as exc:
+            self._board_changes_error = exc
+            raise
         self._board_changes_raw_cache = df
         return df.copy() if df is not None else df
 
@@ -2355,7 +2457,14 @@ class DsaEastMoneyHotspotProvider:
 
         manager = _get_dsa_fetcher_manager()
         fetch = manager.get_concept_rankings if source == "concept" else manager.get_sector_rankings
-        top, _bottom = fetch(100)
+        from src.services.market_hotspot_service import MarketHotspotService
+
+        top, _bottom = MarketHotspotService._call_with_timeout(
+            lambda: fetch(100),
+            timeout_seconds=self._HOTSPOT_LIST_TIMEOUT_SECONDS,
+            task_name=f"alphasift_{source}_rankings",
+            inflight_key=("alphasift_rankings", source),
+        )
         rows = []
         for index, item in enumerate(top or []):
             name = _env_text((item or {}).get("name"))
@@ -2377,15 +2486,16 @@ class DsaEastMoneyHotspotProvider:
             logger.warning("AlphaSift hotspot %s ranking fetch failed; falling back to board names: %s", source, exc)
             return pd.DataFrame()
 
-    def _fetch_board_names(self, *, source_fs: str) -> Any:
+    def _fetch_board_names(self, *, source_fs: str, retry: bool = True) -> Any:
         import pandas as pd
 
         params = dict(self._COMMON_PARAMS)
         params.update({"pz": "100", "fs": source_fs})
-        response = self._eastmoney_get(
+        request = self._eastmoney_get if retry else self._eastmoney_get_once
+        response = request(
             self._BASE_URL,
             params=params,
-            timeout=self._HTTP_TIMEOUT_SECONDS,
+            timeout=self._HOTSPOT_LIST_TIMEOUT_SECONDS if not retry else self._HTTP_TIMEOUT_SECONDS,
             headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"},
         )
         response.raise_for_status()

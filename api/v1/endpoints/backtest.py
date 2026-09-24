@@ -13,6 +13,8 @@ from api.deps import get_database_manager
 from api.v1.schemas.backtest import (
     BacktestRunRequest,
     BacktestRunResponse,
+    BacktestTaskAccepted,
+    BacktestTaskStatus,
     BacktestResultItem,
     BacktestResultsResponse,
     PerformanceMetrics,
@@ -20,6 +22,7 @@ from api.v1.schemas.backtest import (
 from api.v1.schemas.common import ErrorResponse
 from src.services.backtest_service import BacktestService
 from src.storage import DatabaseManager
+from src.services.task_queue import DuplicateTaskError, TaskStatus, get_task_queue
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +86,91 @@ def run_backtest(
             status_code=500,
             detail={"error": "internal_error", "message": f"回测执行失败: {str(exc)}"},
         )
+
+
+@router.post(
+    "/run/async",
+    response_model=BacktestTaskAccepted,
+    status_code=202,
+    summary="提交后台回测",
+    description="立即返回任务编号；适用于可能超过普通 HTTP 超时的回测。",
+)
+def submit_backtest(
+    request: BacktestRunRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> BacktestTaskAccepted:
+    _validate_analysis_date_range(request.analysis_date_from, request.analysis_date_to)
+
+    def execute():
+        service = BacktestService(db_manager)
+        return service.run_backtest(
+            code=request.code,
+            force=request.force,
+            eval_window_days=request.eval_window_days,
+            min_age_days=request.min_age_days,
+            analysis_date_from=request.analysis_date_from,
+            analysis_date_to=request.analysis_date_to,
+            limit=request.limit,
+        )
+
+    dedupe_key = ":".join(
+        str(value)
+        for value in (
+            "backtest",
+            request.code or "all",
+            request.force,
+            request.eval_window_days,
+            request.min_age_days,
+            request.analysis_date_from or "",
+            request.analysis_date_to or "",
+            request.limit,
+        )
+    )
+    try:
+        task = get_task_queue().submit_background_task(
+            execute,
+            stock_code=f"backtest:{request.code or 'all'}",
+            stock_name=request.code,
+            report_type="backtest",
+            message="回测任务已提交",
+            dedupe=True,
+            dedupe_key=dedupe_key,
+        )
+    except DuplicateTaskError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "duplicate_task",
+                "message": "相同范围的回测任务正在执行",
+                "task_id": exc.existing_task_id,
+            },
+        )
+    return BacktestTaskAccepted(
+        task_id=task.task_id,
+        status=task.status.value,
+        message=task.message or "回测任务已提交",
+    )
+
+
+@router.get("/run/tasks/{task_id}", response_model=BacktestTaskStatus)
+def get_backtest_task(task_id: str) -> BacktestTaskStatus:
+    task = get_task_queue().get_task(task_id)
+    if task is None or task.report_type != "backtest":
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": "回测任务不存在"},
+        )
+    result = None
+    if task.status == TaskStatus.COMPLETED and isinstance(task.result, dict):
+        result = BacktestRunResponse(**task.result)
+    return BacktestTaskStatus(
+        task_id=task.task_id,
+        status=task.status.value,
+        progress=task.progress,
+        message=task.message,
+        result=result,
+        error=task.error,
+    )
 
 
 @router.get(

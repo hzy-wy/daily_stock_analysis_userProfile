@@ -10,6 +10,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from api.auth_dispatch import auth_worker
 from api.deps import get_system_config_service
 from src.auth import (
     APP_COOKIE_NAME,
@@ -209,7 +210,8 @@ def _get_auth_status_dict(request: Request | None = None) -> dict:
     summary="Get auth status",
     description="Returns whether auth is enabled and if the current request is logged in.",
 )
-async def auth_status(request: Request):
+@auth_worker
+def auth_status(request: Request):
     """Return authEnabled, loggedIn, passwordSet, passwordChangeable, setupState without requiring auth."""
     if is_multi_user_mode():
         service = get_identity_service()
@@ -249,7 +251,8 @@ async def auth_status(request: Request):
         "currentPassword is required."
     ),
 )
-async def auth_update_settings(request: Request, body: AuthSettingsRequest):
+@auth_worker
+def auth_update_settings(request: Request, body: AuthSettingsRequest):
     """Manage auth enablement from the settings page."""
     if is_multi_user_mode():
         return JSONResponse(
@@ -415,7 +418,8 @@ async def auth_update_settings(request: Request, body: AuthSettingsRequest):
     summary="Login or set initial password",
     description="Verify password and set session cookie. If password not set yet, accepts password+passwordConfirm.",
 )
-async def auth_login(request: Request, body: LoginRequest):
+@auth_worker
+def auth_login(request: Request, body: LoginRequest):
     """Verify password or set initial password, set cookie on success. Returns 401 or 429 on failure."""
     if is_multi_user_mode():
         service = get_identity_service()
@@ -541,7 +545,8 @@ async def auth_login(request: Request, body: LoginRequest):
     summary="Change password",
     description="Change password. Requires valid session.",
 )
-async def auth_change_password(body: ChangePasswordRequest, request: Request = None):
+@auth_worker
+def auth_change_password(body: ChangePasswordRequest, request: Request = None):
     """Change password. Requires login."""
     if is_multi_user_mode():
         principal = getattr(getattr(request, "state", None), "principal", None)
@@ -604,7 +609,8 @@ async def auth_change_password(body: ChangePasswordRequest, request: Request = N
     summary="Logout",
     description="Clear session cookie.",
 )
-async def auth_logout(request: Request):
+@auth_worker
+def auth_logout(request: Request):
     """Clear session cookie."""
     if is_multi_user_mode():
         get_identity_service().revoke_session(
@@ -629,7 +635,8 @@ async def auth_logout(request: Request):
     "/invitations/accept",
     summary="Accept a private deployment invitation",
 )
-async def accept_invitation(body: InvitationAcceptRequest):
+@auth_worker
+def accept_invitation(body: InvitationAcceptRequest):
     """Create one member account from a one-time invitation token."""
 
     if not is_multi_user_mode():

@@ -50,6 +50,18 @@ router = APIRouter()
 
 _ACTIVE_CODEX_STREAMS: Dict[tuple[Optional[str], str], threading.Event] = {}
 _ACTIVE_CODEX_STREAMS_LOCK = threading.Lock()
+AGENT_STREAM_EVENT_BUFFER_SIZE = 128
+
+
+def _enqueue_stream_event(queue: asyncio.Queue, event: Dict[str, Any]) -> None:
+    """Keep stream memory bounded while always preserving a terminal event."""
+    if queue.full():
+        if event.get("type") in ("done", "error"):
+            while not queue.empty():
+                queue.get_nowait()
+        else:
+            queue.get_nowait()
+    queue.put_nowait(event)
 
 class ChatHistoryMessage(BaseModel):
     role: Literal["user", "assistant"]
@@ -178,13 +190,13 @@ async def get_skills():
     """
     Get available agent strategy skills.
     """
-    return _build_skills_response(get_config())
+    return await asyncio.to_thread(lambda: _build_skills_response(get_config()))
 
 
 @router.get("/strategies", response_model=StrategiesResponse, include_in_schema=False)
 async def get_strategies():
     """Compatibility alias for legacy clients."""
-    payload = _build_skills_response(get_config())
+    payload = await asyncio.to_thread(lambda: _build_skills_response(get_config()))
     return StrategiesResponse(
         strategies=payload.skills,
         default_strategy_id=payload.default_skill_id,
@@ -214,7 +226,7 @@ async def agent_chat(request: ChatRequest):
     
     try:
         skills = request.effective_skills
-        executor = _build_executor(config, skills or None)
+        executor = await asyncio.to_thread(_build_executor, config, skills or None)
 
         # Pass explicit skills into context for the orchestrator.
         # Direct assignment so caller-provided skills always take precedence
@@ -279,10 +291,12 @@ async def list_chat_sessions(limit: int = 50, user_id: Optional[str] = None):
             ``feishu_ou_abc``.
     """
     from src.storage import get_db
-    sessions = get_db().get_chat_sessions(
-        limit=limit,
-        session_prefix=user_id,
-        extra_session_ids=[user_id] if user_id else None,
+    sessions = await asyncio.to_thread(
+        lambda: get_db().get_chat_sessions(
+            limit=limit,
+            session_prefix=user_id,
+            extra_session_ids=[user_id] if user_id else None,
+        ),
     )
     return SessionsResponse(sessions=sessions)
 
@@ -291,7 +305,9 @@ async def list_chat_sessions(limit: int = 50, user_id: Optional[str] = None):
 async def get_chat_session_messages(session_id: str, limit: int = 100):
     """获取单个会话的完整消息"""
     from src.storage import get_db
-    messages = get_db().get_conversation_messages(session_id, limit=limit)
+    messages = await asyncio.to_thread(
+        lambda: get_db().get_conversation_messages(session_id, limit=limit)
+    )
     return SessionMessagesResponse(session_id=session_id, messages=messages)
 
 
@@ -299,7 +315,7 @@ async def get_chat_session_messages(session_id: str, limit: int = 100):
 async def delete_chat_session(session_id: str):
     """删除指定会话"""
     from src.storage import get_db
-    count = get_db().delete_conversation_session(session_id)
+    count = await asyncio.to_thread(lambda: get_db().delete_conversation_session(session_id))
     return {"deleted": count}
 
 
@@ -497,7 +513,7 @@ async def agent_chat_stream(request: ChatRequest, http_request: Request):
 
     session_id = request.session_id or str(uuid.uuid4())
     loop = asyncio.get_running_loop()
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=AGENT_STREAM_EVENT_BUFFER_SIZE)
     cancel_event = threading.Event()
     request_id = request.request_id or str(uuid.uuid4())
     from src.services.identity_service import current_user_scope
@@ -529,7 +545,7 @@ async def agent_chat_stream(request: ChatRequest, http_request: Request):
         if event.get("type") in ("tool_start", "tool_done"):
             tool = event.get("tool", "")
             event["display_name"] = TOOL_DISPLAY_NAMES.get(tool, tool)
-        asyncio.run_coroutine_threadsafe(queue.put(event), loop)
+        loop.call_soon_threadsafe(_enqueue_stream_event, queue, event)
 
     def run_sync(executor, turn):
         try:
@@ -555,7 +571,7 @@ async def agent_chat_stream(request: ChatRequest, http_request: Request):
                 "error_code": getattr(result, "error_code", None),
                 "request_id": request_id,
             })
-            asyncio.run_coroutine_threadsafe(queue.put(event), loop)
+            loop.call_soon_threadsafe(_enqueue_stream_event, queue, event)
         except Exception as exc:
             logger.error("Agent stream error: %s", exc)
             event = {
@@ -565,7 +581,7 @@ async def agent_chat_stream(request: ChatRequest, http_request: Request):
                 "backend": backend_id,
                 "request_id": request_id,
             }
-            asyncio.run_coroutine_threadsafe(queue.put(event), loop)
+            loop.call_soon_threadsafe(_enqueue_stream_event, queue, event)
 
     async def event_generator():
         fut = None

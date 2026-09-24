@@ -61,6 +61,7 @@ class AnalysisService:
         query_source: str = "api",
         portfolio_context: Optional[Dict[str, Any]] = None,
         report_language: Optional[str] = None,
+        daily_market_context_allow_generate: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """
         执行股票分析
@@ -116,6 +117,7 @@ class AnalysisService:
                 analysis_skills=skills,
                 analysis_phase=analysis_phase,
                 portfolio_context=portfolio_context,
+                daily_market_context_allow_generate=daily_market_context_allow_generate,
             )
             
             # 确定报告类型 (API: simple/detailed/full/brief -> ReportType)

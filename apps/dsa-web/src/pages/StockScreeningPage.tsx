@@ -464,6 +464,8 @@ const StockScreeningPage: React.FC = () => {
   const [loadingHotspotDetail, setLoadingHotspotDetail] = useState(false);
   const [hotspotDetailError, setHotspotDetailError] = useState('');
   const [loadingHotspots, setLoadingHotspots] = useState(false);
+  const hotspotRefreshRequestRef = useRef(0);
+  useEffect(() => () => { hotspotRefreshRequestRef.current += 1; }, []);
   const [hotspotError, setHotspotError] = useState('');
   const [screenMeta, setScreenMeta] = useState<AlphaSiftScreenResponse | null>(null);
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
@@ -565,10 +567,27 @@ const StockScreeningPage: React.FC = () => {
   }, []);
 
   const loadHotspots = useCallback(async (refresh = false) => {
+    const requestId = ++hotspotRefreshRequestRef.current;
     setLoadingHotspots(true);
     setHotspotError('');
     try {
-      const result = await alphasiftApi.getHotspots({ provider: 'akshare', top: 12, refresh });
+      let result = await alphasiftApi.getHotspots({ provider: 'akshare', top: 12, refresh });
+      for (let attempt = 0; result.refreshing && attempt < 30; attempt += 1) {
+        if (requestId !== hotspotRefreshRequestRef.current) return;
+        if (result.hotspots?.length) {
+          setHotspots(result.hotspots);
+          setHotspotsUpdatedAt(result.cachedAt || null);
+        }
+        setHotspotError(result.message || '正在更新热点题材，暂时展示上次数据。');
+        setLoadingHotspots(false);
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        if (requestId !== hotspotRefreshRequestRef.current) return;
+        result = await alphasiftApi.getHotspots({ provider: 'akshare', top: 12, refresh: false });
+      }
+      if (requestId !== hotspotRefreshRequestRef.current) return;
+      setHotspotError(result.refreshing
+        ? '热点源响应较慢，后台仍在更新。已保留上次数据，可稍后重新查看。'
+        : result.message || (result.stale ? '当前展示历史热点数据，尚未获得最新结果。' : ''));
       const nextHotspots = result.hotspots || [];
       const nextDetails = result.details || {};
       hotspotDetailsByTopicRef.current = {
@@ -579,7 +598,7 @@ const StockScreeningPage: React.FC = () => {
       const retainedTopic = Boolean(currentTopic && nextHotspots.some((item) => item.topic === currentTopic));
       const nextTopic = retainedTopic ? currentTopic : null;
       setHotspots(nextHotspots);
-      setHotspotsUpdatedAt(result.cachedAt || (nextHotspots.length > 0 ? new Date().toISOString() : null));
+      setHotspotsUpdatedAt(result.cachedAt || null);
       setSelectedHotspotTopic(nextTopic);
       selectedHotspotTopicRef.current = nextTopic;
       if (nextTopic && nextDetails[nextTopic]) {
@@ -591,13 +610,14 @@ const StockScreeningPage: React.FC = () => {
         setHotspotDetail(null);
       }
       setHotspotDetailError('');
-      if (nextHotspots.length === 0) {
+      if (nextHotspots.length === 0 && !result.refreshing) {
         setHotspotError(formatHotspotEmptyMessage(result));
       }
     } catch (err) {
+      if (requestId !== hotspotRefreshRequestRef.current) return;
       setHotspotError(toApiErrorMessage(err, '热点题材加载失败，请稍后重试。'));
     } finally {
-      setLoadingHotspots(false);
+      if (requestId === hotspotRefreshRequestRef.current) setLoadingHotspots(false);
     }
   }, [loadHotspotDetail]);
 
@@ -891,7 +911,10 @@ const StockScreeningPage: React.FC = () => {
 
       {error ? <InlineAlert variant="danger" title="调用失败" message={error} /> : null}
 
-      <section className="rounded-2xl border border-border/80 bg-card/95 p-4 shadow-soft-card">
+      <section
+        className="rounded-2xl border border-border/80 bg-card/95 p-4 shadow-soft-card"
+        data-onboarding="screening-hotspots"
+      >
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex items-start gap-3">
             <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-orange-500/10 text-orange-500 shadow-[0_10px_30px_rgba(249,115,22,0.16)]">

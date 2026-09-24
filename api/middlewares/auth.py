@@ -12,6 +12,7 @@ from typing import Callable
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.concurrency import run_in_threadpool
 
 from src.auth import ADMIN_COOKIE_NAME, APP_COOKIE_NAME, COOKIE_NAME, is_auth_enabled, verify_session
 from src.guest_access import is_guest_access_enabled
@@ -99,11 +100,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable,
     ):
-        if not is_auth_enabled():
+        auth_enabled = is_auth_enabled()
+        multi_user = is_multi_user_mode()
+        # A cached legacy toggle must never bypass explicit multi-user auth.
+        if not auth_enabled and not multi_user:
             return await call_next(request)
 
         path = request.url.path
-        if is_multi_user_mode():
+        if multi_user:
             origin_error = self._validate_mutation_origin(request)
             if origin_error is not None:
                 return origin_error
@@ -115,7 +119,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not path.startswith("/api/v1/"):
             return await call_next(request)
 
-        if is_multi_user_mode():
+        if multi_user:
             return await self._dispatch_multi_user(request, call_next)
 
         cookie_val = request.cookies.get(COOKIE_NAME)
@@ -136,9 +140,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def _dispatch_multi_user(self, request: Request, call_next: Callable):
         """Authenticate a database session and bind its principal to the request."""
 
-        service = get_identity_service()
-        service.ensure_ready()
-        if not service.has_owner():
+        service = await run_in_threadpool(get_identity_service)
+        await run_in_threadpool(service.ensure_ready)
+        if not await run_in_threadpool(service.has_owner):
             return JSONResponse(
                 status_code=503,
                 content={
@@ -154,7 +158,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         audience = ADMIN_AUDIENCE if is_admin_path else APP_AUDIENCE
         cookie_name = ADMIN_COOKIE_NAME if is_admin_path else APP_COOKIE_NAME
         token = request.cookies.get(cookie_name)
-        principal = service.principal_from_token(token or "", audience)
+        principal = await run_in_threadpool(service.principal_from_token, token or "", audience)
         if principal is None:
             if (
                 not is_admin_path
@@ -185,7 +189,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if request.method.upper() not in {"GET", "HEAD", "OPTIONS"} and (
                 is_admin_path or permission
             ):
-                service.audit(
+                await run_in_threadpool(
+                    service.audit,
                     actor_type="user",
                     actor_id=principal.user_id,
                     action=f"api.{request.method.lower()}",

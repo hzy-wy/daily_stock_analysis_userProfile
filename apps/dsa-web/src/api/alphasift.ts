@@ -168,6 +168,7 @@ export type AlphaSiftHotspotDetail = {
 };
 
 export type AlphaSiftHotspotsResponse = {
+  refreshing?: boolean;
   enabled: boolean;
   provider: string;
   providerUsed?: string;
@@ -296,9 +297,9 @@ export const alphasiftApi = {
         provider: payload.provider || 'akshare',
         top: payload.top ?? 12,
         refresh: payload.refresh ?? false,
-        include_details: payload.includeDetails ?? true,
+        include_details: payload.includeDetails ?? false,
       },
-      timeout: ALPHASIFT_INSTALL_TIMEOUT_MS,
+      timeout: 15000,
     });
     const normalized = toCamelCase<AlphaSiftHotspotsResponse>(response.data);
     if (normalized.details) {

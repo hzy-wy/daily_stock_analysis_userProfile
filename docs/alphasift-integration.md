@@ -50,7 +50,8 @@ AlphaSift 作为独立仓库维护的选股引擎接入 DSA。DSA 默认不启�
 
 AlphaSift 需要提供 `alphasift.dsa_adapter` 模块，并保持以下稳定函数：
 
-- `/api/v1/alphasift/hotspots` 支持 `include_details=true`：列表响应会尽量附带 Top 题材的 `details` 映射，Web 端默认启用，用于批量复用发酵路线和概念股缓存，减少切换不同题材时的二次等待。
+- `/api/v1/alphasift/hotspots` 支持 `include_details=true`：只附带已有 Top 题材详情缓存，不同步发起详情、新闻搜索或 LLM 摘要请求。缺失详情在用户点击题材后加载。
+- 热点刷新约 50ms 后即返回 `refreshing=true` 与已有缓存；Web 每 1 秒查询一次 `refresh=false`，最多查询 30 次，启动后台任务后立即解除按钮加载态，离页停止查询。上游异动等待最多 3 秒，概念/行业排行与东财板块列表各等待最多 4 秒且并行取最快有效结果；不能强制中断的第三方调用由现有有界工作线程机制限制。一个服务进程只允许一个热点刷新运行；不同进程独立协调，多 worker 部署暂不保证跨进程去重。后台刷新完成后返回结果，失败缓存标注 `stale=true`，不更新旧数据时间。没有可用源和缓存时明确返回不可用状态，不能保证外部数据源故障期间产生最新数据。
 
 ```python
 def get_status() -> dict: ...

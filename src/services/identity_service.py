@@ -545,7 +545,7 @@ class IdentityService:
         return user
 
     def has_owner(self) -> bool:
-        self._seed_authorization()
+        self.ensure_ready()
         return self.get_owner_user_id() is not None
 
     def get_owner_user_id(self) -> Optional[str]:

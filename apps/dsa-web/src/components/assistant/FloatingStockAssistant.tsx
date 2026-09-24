@@ -95,6 +95,7 @@ export const FloatingStockAssistant = () => {
           ref={triggerRef}
           type="button"
           className="stock-assistant-launcher"
+          data-onboarding="stock-assistant-launcher"
           aria-label={launcherLabel}
           aria-expanded={isOpen}
           aria-controls="stock-assistant-panel"

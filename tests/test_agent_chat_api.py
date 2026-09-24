@@ -118,7 +118,8 @@ def test_chat_session_messages_api_does_not_expose_provider_trace(tmp_path: Path
         estimated_tokens=10,
     )
 
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False):
+    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("api.middlewares.auth.is_multi_user_mode", return_value=False):
         response = TestClient(create_app(static_dir=tmp_path / "static")).get(
             f"/api/v1/agent/chat/sessions/{session_id}"
         )
@@ -137,6 +138,7 @@ def test_agent_chat_forwards_stock_context_to_executor(tmp_path: Path) -> None:
     executor.chat.return_value = _result()
 
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("api.middlewares.auth.is_multi_user_mode", return_value=False), \
          patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config()), \
          patch("api.v1.endpoints.agent._build_executor", return_value=executor):
         response = TestClient(create_app(static_dir=tmp_path / "static")).post(
@@ -155,6 +157,7 @@ def test_agent_chat_forwards_stock_context_to_executor(tmp_path: Path) -> None:
 
 def test_codex_agent_chat_rejects_non_streaming_entrypoint(tmp_path: Path) -> None:
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("api.middlewares.auth.is_multi_user_mode", return_value=False), \
          patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
          patch("api.v1.endpoints.agent._build_executor") as build_executor:
         response = TestClient(create_app(static_dir=tmp_path / "static")).post(
@@ -329,6 +332,7 @@ def test_stream_preparation_failure_emits_no_accepted_and_never_starts_backend(f
 def test_server_selects_actual_backend_for_stream(tmp_path: Path) -> None:
     executor = _executor(_result(backend="codex_app_server"))
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("api.middlewares.auth.is_multi_user_mode", return_value=False), \
          patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
          patch("api.v1.endpoints.agent._build_executor", return_value=executor):
         response = TestClient(create_app(static_dir=tmp_path / "static")).post(
@@ -473,6 +477,7 @@ def test_codex_stop_is_scoped_to_the_authenticated_owner(monkeypatch) -> None:
 def test_litellm_stream_keeps_existing_execution_signature(tmp_path: Path) -> None:
     executor = _executor(_result(backend="litellm"))
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("api.middlewares.auth.is_multi_user_mode", return_value=False), \
          patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config()), \
          patch("api.v1.endpoints.agent._build_executor", return_value=executor):
         response = TestClient(create_app(static_dir=tmp_path / "static")).post(
@@ -490,6 +495,7 @@ def test_litellm_non_streaming_error_keeps_legacy_detail(tmp_path: Path) -> None
     executor = MagicMock()
     executor.chat.side_effect = RuntimeError("legacy failure")
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("api.middlewares.auth.is_multi_user_mode", return_value=False), \
          patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config()), \
          patch("api.v1.endpoints.agent._build_executor", return_value=executor):
         response = TestClient(create_app(static_dir=tmp_path / "static")).post(
@@ -504,6 +510,7 @@ def test_litellm_streaming_error_follows_accepted(tmp_path: Path) -> None:
     executor = _executor()
     executor.execute_turn.side_effect = RuntimeError("legacy failure")
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("api.middlewares.auth.is_multi_user_mode", return_value=False), \
          patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config()), \
          patch("api.v1.endpoints.agent._build_executor", return_value=executor):
         response = TestClient(create_app(static_dir=tmp_path / "static")).post(

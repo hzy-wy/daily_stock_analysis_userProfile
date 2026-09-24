@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ThemeProvider } from '../../components/theme/ThemeProvider';
 import LoginPage from '../LoginPage';
 
 const { navigate, useSearchParamsMock, useAuthMock } = vi.hoisted(() => ({
@@ -77,6 +78,27 @@ describe('LoginPage', () => {
 
     expect(pageRoot).not.toBeNull();
     expect(pageRoot?.getAttribute('style') ?? '').not.toContain('--login-bg-main');
+  });
+
+  it('offers all theme modes before the user signs in', async () => {
+    useAuthMock.mockReturnValue({
+      login: vi.fn(),
+      passwordSet: true,
+      setupState: 'enabled',
+    });
+
+    render(
+      <ThemeProvider>
+        <LoginPage />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '切换主题' }));
+
+    expect(await screen.findByRole('menu', { name: '主题模式' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: '浅色' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: '深色' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: '跟随系统' })).toBeInTheDocument();
   });
 
   it('enters the normal workspace as a guest when the server enables it', () => {

@@ -38,6 +38,7 @@ export function useDashboardLifecycle({
   enabled = true,
 }: UseDashboardLifecycleOptions): void {
   const removalTimeoutsRef = useRef<number[]>([]);
+  const backgroundRefreshRef = useRef(false);
 
   useEffect(() => {
     if (!enabled) {
@@ -55,34 +56,41 @@ export function useDashboardLifecycle({
       return;
     }
 
-    const intervalId = window.setInterval(() => {
-      void refreshHistory(true);
-      void refreshStockBar();
-      void refreshMarketReviewHistory?.(true);
-      void refreshActiveTasks();
-      onDashboardDataRefresh?.();
-    }, 30_000);
-
-    return () => window.clearInterval(intervalId);
-  }, [enabled, onDashboardDataRefresh, refreshHistory, refreshMarketReviewHistory, refreshStockBar, refreshActiveTasks]);
-
-  useEffect(() => {
-    if (!enabled) {
-      return;
-    }
+    const refresh = async () => {
+      if (document.visibilityState === 'hidden' || backgroundRefreshRef.current) {
+        return;
+      }
+      backgroundRefreshRef.current = true;
+      try {
+        await Promise.allSettled([
+          Promise.resolve().then(() => refreshHistory(true)),
+          Promise.resolve().then(() => refreshStockBar()),
+          Promise.resolve().then(() => refreshMarketReviewHistory?.(true)),
+          Promise.resolve().then(() => refreshActiveTasks()),
+        ]);
+      } finally {
+        backgroundRefreshRef.current = false;
+      }
+    };
+    const triggerRefresh = () => {
+      if (document.visibilityState !== 'hidden' && !backgroundRefreshRef.current) {
+        void refresh();
+        onDashboardDataRefresh?.();
+      }
+    };
+    const intervalId = window.setInterval(triggerRefresh, 30_000);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        void refreshHistory(true);
-        void refreshStockBar();
-        void refreshMarketReviewHistory?.(true);
-        void refreshActiveTasks();
-        onDashboardDataRefresh?.();
+        triggerRefresh();
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [enabled, onDashboardDataRefresh, refreshHistory, refreshMarketReviewHistory, refreshStockBar, refreshActiveTasks]);
 
   useEffect(() => {
@@ -102,6 +110,13 @@ export function useDashboardLifecycle({
   };
 
   useTaskStream({
+    onResyncRequired: () => {
+      void Promise.allSettled([
+        refreshActiveTasks(), refreshHistory(true), refreshStockBar(),
+        refreshMarketReviewHistory?.(true),
+      ]);
+      onDashboardDataRefresh?.();
+    },
     onTaskCreated: syncTaskCreated,
     onTaskStarted: syncTaskUpdated,
     onTaskProgress: syncTaskUpdated,

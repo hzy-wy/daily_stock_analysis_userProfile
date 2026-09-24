@@ -80,6 +80,7 @@ from src.schemas.decision_action import build_action_fields
 from src.services.name_to_code_resolver import resolve_name_to_code
 from src.services.task_queue import (
     get_task_queue,
+    TASK_EVENT_BUFFER_SIZE,
     DuplicateTaskError,
     TaskStatus as TaskStatusEnum,
 )
@@ -475,6 +476,10 @@ def _handle_sync_analysis(
             skills=getattr(request, "skills", None),
             analysis_phase=request.analysis_phase,
             report_language=getattr(request, "report_language", None),
+            # A user-initiated stock analysis can reuse today's persisted
+            # market context, but must not invisibly become a market-review
+            # job and contend with the explicit market-review control.
+            daily_market_context_allow_generate=False,
         )
 
         if result is None:
@@ -615,13 +620,9 @@ def get_task_list(
     """
     task_queue = get_task_queue()
     
-    # 获取所有任务
-    all_tasks = task_queue.list_all_tasks(limit=limit)
-    
-    # 状态筛选
-    if status:
-        status_list = [s.strip().lower() for s in status.split(",")]
-        all_tasks = [t for t in all_tasks if t.status.value in status_list]
+    # Filter before limiting, otherwise newer completed tasks hide active work.
+    status_list = [s.strip().lower() for s in status.split(",")] if status else None
+    all_tasks = task_queue.list_all_tasks(limit=limit, statuses=status_list)
     
     # 统计信息
     stats = task_queue.get_task_stats()
@@ -688,20 +689,16 @@ async def task_stream():
     """
     async def event_generator():
         task_queue = get_task_queue()
-        event_queue: asyncio.Queue = asyncio.Queue()
+        event_queue: asyncio.Queue = asyncio.Queue(maxsize=TASK_EVENT_BUFFER_SIZE)
         
-        # 发送连接成功事件
-        yield _format_sse_event("connected", {"message": "Connected to task stream"})
-        
-        # 发送当前进行中的任务
-        pending_tasks = task_queue.list_pending_tasks()
-        for task in pending_tasks:
-            yield _format_sse_event("task_created", task.to_dict())
-        
-        # 订阅任务事件
+        # Subscribe before yielding: tasks can complete while the snapshot is sent.
         task_queue.subscribe(event_queue)
         
         try:
+            yield _format_sse_event("connected", {"message": "Connected to task stream"})
+            pending_tasks = task_queue.list_pending_tasks()
+            for task in pending_tasks:
+                yield _format_sse_event("task_created", task.to_dict())
             while True:
                 try:
                     # 等待事件，超时发送心跳

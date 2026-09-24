@@ -1465,6 +1465,27 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(result, {"stock_code": "600519"})
         self.assertEqual(pipeline_cls.call_args.kwargs["analysis_skills"], request_skills)
 
+    def test_analysis_service_can_reuse_market_context_without_generating_review(self) -> None:
+        service = object.__new__(AnalysisService)
+        pipeline_instance = MagicMock()
+        pipeline_instance.process_single_stock.return_value = object()
+
+        with patch("src.config.get_config", return_value=SimpleNamespace()), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline_instance) as pipeline_cls, \
+             patch.object(AnalysisService, "_build_analysis_response", return_value={"stock_code": "600519"}):
+            result = AnalysisService.analyze_stock(
+                service,
+                "600519",
+                query_id="q1",
+                daily_market_context_allow_generate=False,
+            )
+
+        self.assertEqual(result, {"stock_code": "600519"})
+        self.assertIs(
+            pipeline_cls.call_args.kwargs["daily_market_context_allow_generate"],
+            False,
+        )
+
     def test_report_type_full_is_preserved_in_response_metadata(self) -> None:
         service = AnalysisService()
         pipeline_instance = MagicMock()

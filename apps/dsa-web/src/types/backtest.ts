@@ -30,6 +30,18 @@ export interface BacktestRunResponse {
   diagnostics?: Record<string, unknown>;
 }
 
+export interface BacktestTaskAccepted {
+  taskId: string;
+  status: string;
+  message: string;
+}
+
+export interface BacktestTaskStatus extends BacktestTaskAccepted {
+  progress: number;
+  result?: BacktestRunResponse | null;
+  error?: string | null;
+}
+
 // ============ Result Item ============
 
 export interface BacktestResultItem {
