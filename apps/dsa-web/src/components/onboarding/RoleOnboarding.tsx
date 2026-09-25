@@ -17,6 +17,13 @@ import {
 
 type TourUser = NonNullable<AdminStatus['user']>;
 
+const GUEST_TOUR_USER: TourUser = {
+  id: 'guest-session',
+  displayName: '游客',
+  roles: ['member'],
+  permissions: [],
+};
+
 type RoleTourProps = {
   scope: OnboardingScope;
   user: TourUser;
@@ -78,8 +85,9 @@ export const WorkspaceOnboarding: React.FC = () => {
     }
   }, [location.pathname, navigate]);
 
-  if (!loggedIn || guestMode || !user) return null;
-  return <RoleTour scope="workspace" user={user} autoStart onStepChange={handleStepChange} />;
+  const tourUser = guestMode ? GUEST_TOUR_USER : loggedIn ? user : null;
+  if (!tourUser) return null;
+  return <RoleTour scope="workspace" user={tourUser} autoStart onStepChange={handleStepChange} />;
 };
 
 export const AdminOnboarding: React.FC<{ user: TourUser }> = ({ user }) => (

@@ -5,16 +5,17 @@ import { CommandNavigation } from '../CommandNavigation';
 
 const mockLogout = vi.fn().mockResolvedValue(undefined);
 const mockGetAlphaSiftStatus = vi.fn().mockResolvedValue({ enabled: false, available: false, installSpecIsDefault: false });
+const mockAuth = {
+  authEnabled: true,
+  guestMode: false,
+  loggedIn: true,
+  logout: mockLogout,
+  requestLogin: vi.fn(),
+  user: { roles: ['member'], permissions: ['*'] },
+};
 
 vi.mock('../../../contexts/AuthContext', () => ({
-  useAuth: () => ({
-    authEnabled: true,
-    guestMode: false,
-    loggedIn: true,
-    logout: mockLogout,
-    requestLogin: vi.fn(),
-    user: { permissions: ['*'] },
-  }),
+  useAuth: () => mockAuth,
 }));
 
 vi.mock('../../../api/alphasift', () => ({
@@ -35,6 +36,9 @@ vi.mock('../../i18n/UiLanguageToggle', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockAuth.guestMode = false;
+  mockAuth.loggedIn = true;
+  mockAuth.user = { roles: ['member'], permissions: ['*'] };
   mockGetAlphaSiftStatus.mockResolvedValue({ enabled: false, available: false, installSpecIsDefault: false });
 });
 
@@ -100,5 +104,19 @@ describe('CommandNavigation', () => {
     fireEvent.click(await screen.findByRole('button', { name: '确认退出' }));
 
     expect(mockLogout).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the onboarding replay action to a guest session', () => {
+    mockAuth.guestMode = true;
+    mockAuth.loggedIn = false;
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <CommandNavigation />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: '更多' })[0]);
+    expect(screen.getByRole('button', { name: '新手导览' })).toBeInTheDocument();
   });
 });

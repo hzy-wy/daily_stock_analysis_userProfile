@@ -161,7 +161,8 @@ export const CommandNavigation: React.FC = () => {
     [canConfigureSystem],
   );
   const isSecondaryRoute = secondaryItems.some((item) => location.pathname.startsWith(item.to));
-  const canReplayOnboarding = Boolean(loggedIn && user && resolveOnboardingRole(user.roles, 'workspace'));
+  const canReplayOnboarding = guestMode
+    || Boolean(loggedIn && user && resolveOnboardingRole(user.roles, 'workspace'));
   const closeMobileMenu = () => setMobileMenuOpen(false);
   const requestLogout = () => {
     setDesktopMenuOpen(false);

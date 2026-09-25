@@ -22,7 +22,9 @@ vi.mock('../../../contexts/AuthContext', () => ({
 describe('WorkspaceOnboarding', () => {
   beforeEach(() => {
     localStorage.clear();
+    mockAuth.loggedIn = true;
     mockAuth.guestMode = false;
+    mockAuth.user.id = 'member-1';
     vi.restoreAllMocks();
   });
 
@@ -50,15 +52,22 @@ describe('WorkspaceOnboarding', () => {
     expect(screen.queryByTestId('guided-tour')).not.toBeInTheDocument();
   });
 
-  it('does not show the member tour to a guest session', async () => {
+  it('shows an isolated member tour to a guest session and remembers its completion separately', async () => {
+    mockAuth.loggedIn = false;
     mockAuth.guestMode = true;
     render(
       <MemoryRouter initialEntries={['/']}>
         <WorkspaceOnboarding />
       </MemoryRouter>,
     );
-    await new Promise((resolve) => window.setTimeout(resolve, 650));
-    expect(screen.queryByTestId('guided-tour')).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '先完成一次真实的投研动作' }, { timeout: 1600 }))
+      .toBeInTheDocument();
+    const skipButtons = screen.getAllByRole('button', { name: '跳过导览' });
+    fireEvent.click(skipButtons[skipButtons.length - 1]);
+    await waitFor(() => expect(screen.queryByTestId('guided-tour')).not.toBeInTheDocument());
+
+    expect(localStorage.getItem('dsa:onboarding:v2:workspace:member:guest-session')).not.toBeNull();
+    expect(localStorage.getItem('dsa:onboarding:v2:workspace:member:member-1')).toBeNull();
   });
 
   it('allows a member to replay a previously finished tour on demand', async () => {
